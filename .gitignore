@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+
+# local tool scratch — playwright dom snapshots contain real conversation text
+.playwright-cli/
+.impeccable/
