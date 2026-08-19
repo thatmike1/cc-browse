@@ -684,6 +684,28 @@ def fts_query(q: str) -> str:
 # subagent rows exist only to be searched; they are never listed on their own
 BASE_FILTERS = ["kind = 'session'", "sidechain = 0", "(n_user + n_assistant) > 0"]
 
+# a pasted session id, or the 8-char prefix `list`/`search` print
+_SESSION_ID = re.compile(r"[0-9a-f]{8}[0-9a-f-]*", re.IGNORECASE)
+
+
+def id_lookup(con, q: str, cols: str) -> list:
+    """rows whose session id starts with `q`, or [] if `q` is not id-shaped.
+
+    the project/branch facets are deliberately not applied: an id names one
+    conversation, and a filter left over from browsing should not hide it. the
+    regex admits only hex and dashes, so `q` can carry no LIKE wildcard.
+    """
+    q = q.strip()
+    if not _SESSION_ID.fullmatch(q):
+        return []
+    return con.execute(
+        f"SELECT {cols} FROM sessions s"
+        f" WHERE {' AND '.join(BASE_FILTERS)} AND s.session_id LIKE ?"
+        " ORDER BY s.modified DESC LIMIT 20",
+        (q + "%",),
+    ).fetchall()
+
+
 # already qualified with the `s` alias: an expression cannot take one as a
 # prefix, so `ORDER BY s.` + the value would be a syntax error for the counts
 SORTS = {
@@ -731,6 +753,17 @@ def list_sessions(
         " s.summary, s.first_prompt, s.created, s.modified, s.day, s.n_user,"
         " s.n_assistant, s.n_tool, s.size, s.tail"
     )
+
+    # an id is an identity, not a phrase: it resolves in every mode, and only
+    # falls through to a text search when it matches no conversation
+    if q:
+        found = id_lookup(con, q, cols)
+        if found:
+            return {
+                "total": len(found),
+                "sessions": [_shape(dict(r)) for r in found],
+                "mode": "id",
+            }
 
     if q and mode == "semantic":
         hits = semantic_hits(con, q)
