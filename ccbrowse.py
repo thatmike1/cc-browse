@@ -575,6 +575,109 @@ def _cost_sql(alias: str = "s") -> str:
     )
 
 
+def _cost_fixture_blobs() -> list[str]:
+    """usage blobs covering every shape the two cost rules have to agree on.
+
+    Derived from `PRICES` rather than hardcoded, so a new model or a new bucket
+    is exercised the moment it is added.
+    """
+    def buckets(n: int) -> dict[str, int]:
+        # distinct per-field values, so a swapped multiplier cannot cancel out
+        return {f: n * (i + 1) * 1000 + i for i, f in enumerate(USAGE_FIELDS)}
+
+    blobs: list[str] = []
+    models = list(PRICES)
+    for i, prefix in enumerate(models):
+        blobs.append(json.dumps({prefix: buckets(i + 1)}))
+        # a dated variant, the reason the rule is longest-prefix at all
+        blobs.append(json.dumps({prefix + "-20260101": buckets(i + 2)}))
+    # every prefix that is itself a prefix of another key: the arm order in sql
+    # and the max-length scan in python must pick the same one
+    for a in models:
+        for b in models:
+            if a != b and b.startswith(a):
+                blobs.append(json.dumps({b + "-x": buckets(3)}))
+    # several models in one blob — the sum, and the void when one is unpriced
+    blobs.append(json.dumps({m: buckets(j + 1) for j, m in enumerate(models)}))
+    blobs.append(json.dumps({models[0]: buckets(1), "some-unpriced-model": buckets(2)}))
+    blobs += [
+        json.dumps({"some-unpriced-model": buckets(1)}),
+        json.dumps({"claude": buckets(1)}),  # shorter than any priced prefix
+        json.dumps({models[0]: {}}),  # priced model, no buckets recorded
+        json.dumps({models[0]: {"in": 0, "out": 0}}),  # partial buckets
+        "{}",
+        "",
+        "   ",
+        "not json at all",
+        '{"unclosed": ',
+        "[1, 2, 3]",  # valid json, wrong shape
+        "null",
+    ]
+    return blobs
+
+
+def _cost_disagreements(blobs) -> list[str]:
+    """blobs where `usage_cost` and `_cost_sql` do not return the same figure."""
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE s (usage TEXT)")
+    bad = []
+    for blob in blobs:
+        con.execute("DELETE FROM s")
+        con.execute("INSERT INTO s VALUES (?)", (blob,))
+        sql = con.execute(f"SELECT {_cost_sql()} FROM s").fetchone()[0]
+        py = usage_cost(blob)
+        if py is None or sql is None:
+            same = py is None and sql is None
+        else:
+            same = abs(py - sql) <= 1e-9 * max(1.0, abs(py))
+        if not same:
+            bad.append(f"python={py!r} sql={sql!r} usage={blob[:200]!r}")
+    con.close()
+    return bad
+
+
+def selfcheck() -> int:
+    """pin `_cost_sql` to `usage_cost`; nonzero and loud when they drift apart."""
+    failed = False
+    fixture = _cost_fixture_blobs()
+    bad = _cost_disagreements(fixture)
+    if bad:
+        failed = True
+        print(
+            f"COST MISMATCH: usage_cost and _cost_sql disagree on {len(bad)} of "
+            f"{len(fixture)} fixture blobs — the sql rule in _cost_sql() no longer "
+            "matches the python one in usage_cost():",
+            file=sys.stderr,
+        )
+        for line in bad:
+            print("  " + line, file=sys.stderr)
+    else:
+        print(f"cost: python and sql agree on {len(fixture)} fixture blobs")
+
+    # the real cache when there is one, on top of the fixture, never instead
+    if CACHE_DB.exists():
+        con = open_cache()
+        if con is None:
+            print("cost: real cache skipped (schema mismatch)")
+        else:
+            rows = [r["usage"] for r in con.execute("SELECT usage FROM sessions")]
+            con.close()
+            bad = _cost_disagreements(rows)
+            if bad:
+                failed = True
+                print(
+                    f"COST MISMATCH: {len(bad)} of {len(rows)} cached rows disagree:",
+                    file=sys.stderr,
+                )
+                for line in bad[:20]:
+                    print("  " + line, file=sys.stderr)
+            else:
+                print(f"cost: python and sql agree on {len(rows)} cached rows")
+    else:
+        print("cost: no cache at hand, fixture only")
+    return 1 if failed else 0
+
+
 def _remove_db() -> None:
     """drop the cache *and its wal sidecars* — a stale wal fails the next open."""
     for suffix in ("", "-wal", "-shm"):
@@ -1544,7 +1647,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
 
 
-SUBCOMMANDS = ("search", "show", "list")
+SUBCOMMANDS = ("search", "show", "list", "selfcheck")
 
 
 def fmt_tokens(n: int) -> str:
@@ -1602,7 +1705,13 @@ def cli(argv: list[str]) -> int:
     ls.add_argument("--limit", type=int, default=20)
     ls.add_argument("--json", action="store_true")
 
+    sub.add_parser("selfcheck", help="check the cost rules still agree")
+
     args = ap.parse_args(argv)
+    if args.cmd == "selfcheck":
+        # answers from the code alone, so it works on a fresh clone
+        return selfcheck()
+
     con = open_cache()
     if con is None:
         return 1
