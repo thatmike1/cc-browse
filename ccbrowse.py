@@ -1167,6 +1167,101 @@ def facets(con, project="") -> dict:
     }
 
 
+def timeline(con, start: str, end: str, project="", branch="") -> dict:
+    """sessions overlapping [start, end) with their agents' intervals.
+
+    feeds the day/week view: one bar per session, agent intervals as intensity
+    on it. cost is the whole run's (lead + agents), merged as buckets so an
+    unpriced model nulls the figure instead of shrinking it. timestamps are the
+    stored iso-utc strings, so the range comparison is plain string order.
+    """
+    where = [*BASE_FILTERS, "s.modified >= ?", "s.created < ?", "s.created != ''"]
+    args: list = [start, end]
+    if project:
+        where.append("s.project = ?")
+        args.append(project)
+    if branch:
+        where.append("s.branch = ?")
+        args.append(branch)
+    rows = con.execute(
+        "SELECT s.session_id, s.title, s.project, s.branch, s.created,"
+        " s.modified, s.path, s.usage, s.n_user, s.n_assistant"
+        f" FROM sessions s WHERE {' AND '.join(where)} ORDER BY s.created",
+        args,
+    ).fetchall()
+    agents: dict[str, list] = {}
+    ids = [r["session_id"] for r in rows]
+    for i in range(0, len(ids), 500):
+        chunk = ids[i : i + 500]
+        for a in con.execute(
+            "SELECT parent_id, created, modified, usage, path FROM sessions"
+            " WHERE kind = 'subagent' AND (n_user + n_assistant) > 0"
+            f" AND created != '' AND parent_id IN ({','.join('?' * len(chunk))})",
+            chunk,
+        ):
+            agents.setdefault(a["parent_id"], []).append(a)
+    out = []
+    for r in rows:
+        subs = agents.get(r["session_id"], [])
+        run = usage_merge([r["usage"], *[a["usage"] for a in subs]])
+        out.append({
+            "id": r["session_id"],
+            "title": r["title"],
+            "project": r["project"],
+            "created": r["created"],
+            "modified": r["modified"],
+            "active": is_active(r["path"]),
+            "n_msgs": r["n_user"] + r["n_assistant"],
+            "n_agents": len(subs),
+            "tokens": usage_totals(run)["total"],
+            "cost": usage_cost(run),
+            "agents": [
+                {"start": a["created"], "end": a["modified"],
+                 "active": is_active(a["path"])}
+                for a in subs
+            ],
+        })
+    return {"sessions": out}
+
+
+def timeline_days(con, start: str, end: str, project="", branch="") -> dict:
+    """per-day totals for the month grid, off the indexed day column.
+
+    agent rows carry their own usage, disjoint from the lead's, so summing
+    every row's buckets per day is the true day total — merged in python so
+    the null-on-unpriced rule stays with usage_cost.
+    """
+    where = [
+        "day >= ?", "day < ?", "sidechain = 0", "(n_user + n_assistant) > 0",
+    ]
+    args: list = [start, end]
+    if project:
+        where.append("project = ?")
+        args.append(project)
+    if branch:
+        where.append("branch = ?")
+        args.append(branch)
+    days: dict[str, dict] = {}
+    for r in con.execute(
+        f"SELECT day, kind, usage FROM sessions WHERE {' AND '.join(where)}", args
+    ):
+        d = days.setdefault(r["day"], {"n": 0, "usages": []})
+        if r["kind"] == "session":
+            d["n"] += 1
+        if r["usage"]:
+            d["usages"].append(r["usage"])
+    out = []
+    for day in sorted(days):
+        run = usage_merge(days[day]["usages"])
+        out.append({
+            "day": day,
+            "sessions": days[day]["n"],
+            "tokens": usage_totals(run)["total"],
+            "cost": usage_cost(run) if days[day]["usages"] else None,
+        })
+    return {"days": out}
+
+
 def agent_tool_calls(path: Path) -> dict[str, str]:
     """agent id -> the id of the Task tool call that spawned it, where the log says.
 
@@ -1414,6 +1509,13 @@ class Handler(BaseHTTPRequestHandler):
                         offset=int(one("offset", "0")),
                     )
                 self._json(data)
+            elif url.path == "/api/timeline":
+                fn = timeline_days if one("agg") == "day" else timeline
+                with self.lock:
+                    self._json(fn(
+                        self.con, one("start"), one("end"),
+                        one("project"), one("branch"),
+                    ))
             elif url.path == "/api/facets":
                 with self.lock:
                     self._json(facets(self.con, project=one("project")))
