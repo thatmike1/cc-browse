@@ -41,7 +41,7 @@ CACHE_DB = Path.home() / ".cache" / "cc-browse" / "index.db"
 VEC_FILE = CACHE_DB.parent / "vectors.npy"
 UI_FILE = Path(__file__).parent / "ui.html"
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # how often the background thread re-runs the incremental index
 REFRESH_SECS = 60
@@ -85,6 +85,40 @@ _CAVEAT = re.compile(
     r" commands\. DO NOT.*?(?=$|\n)",
     re.S,
 )
+# a message from another claude session is delivered as a plain `type=user`
+# line whose metadata is byte-identical to a typed prompt — no isMeta, no
+# marker field. the wrapper around the payload is the only signal there is.
+_INBOUND = re.compile(
+    r"<(teammate|agent|cross-session)-message\b([^>]*)>(.*?)</\1-message>", re.S
+)
+_INBOUND_HEAD = re.compile(r"^\s*(?:Another Claude session sent a message:\s*)?<")
+_INBOUND_ATTR = re.compile(r"([\w-]+)=\"([^\"]*)\"")
+# the attributes the three wrapper flavours name their sender with, best first
+_SENDER_KEYS = ("teammate_id", "from-name", "from", "name")
+
+
+def inbound_message(text: str) -> tuple[str, str] | None:
+    """(sender, payload) when a user turn is really a message from another session.
+
+    None for anything typed by the actual user. The wrapper has to open the
+    message — a quoted one further down is somebody talking *about* a teammate
+    message, not one being delivered.
+    """
+    if not text or "-message" not in text:
+        return None
+    if not _INBOUND_HEAD.match(text):
+        return None
+    parts = list(_INBOUND.finditer(text))
+    if not parts:
+        return None
+    if parts[0].start() > 60:  # only the one boilerplate line may precede it
+        return None
+    attrs = dict(_INBOUND_ATTR.findall(parts[0].group(2)))
+    sender = next(
+        (attrs[k] for k in _SENDER_KEYS if attrs.get(k)), "another claude session"
+    )
+    payload = "\n\n".join(p.group(3).strip() for p in parts if p.group(3).strip())
+    return sender, payload
 
 
 def clean_prompt(text: str) -> str:
@@ -294,11 +328,17 @@ def scan_file(path_str: str) -> dict | None:
                 is_tool_echo = bool(parts) and all(
                     k in ("tool_result", "image") for k, _ in parts
                 )
-                if not is_tool_echo and text and not rec["first_prompt"]:
-                    rec["first_prompt"] = clean_prompt(text)[:300]
                 if is_tool_echo:
                     continue
-                text = clean_prompt(text)
+                inbound = inbound_message(text)
+                if inbound:
+                    # another session talking to this one: never the title, and
+                    # only the payload is worth indexing — the rest is boilerplate
+                    text = inbound[1]
+                else:
+                    if text and not rec["first_prompt"]:
+                        rec["first_prompt"] = clean_prompt(text)[:300]
+                    text = clean_prompt(text)
             else:
                 rec["n_assistant"] += 1
                 # one api response is written to several adjacent lines carrying
@@ -1180,8 +1220,16 @@ def full_session(con, session_id: str) -> dict:
             for kind, text, block in message_blocks(msg):
                 if not text:
                     continue
+                sender = ""
                 if kind == "text" and role == "user":
-                    text = clean_prompt(text)
+                    inbound = inbound_message(text)
+                    if inbound:
+                        # delivered by another session, not typed here — its own
+                        # kind so the ui never shows it as the user's own turn
+                        sender, text = inbound
+                        kind = "agent_message"
+                    else:
+                        text = clean_prompt(text)
                     if not text:
                         continue
                 ev = {
@@ -1190,6 +1238,8 @@ def full_session(con, session_id: str) -> dict:
                     "text": text[:20000],
                     "ts": d.get("timestamp", ""),
                 }
+                if sender:
+                    ev["sender"] = sender
                 if kind == "tool" and block.get("id"):
                     # lets the ui line a Task call up with its subagent transcript
                     ev["tool_use_id"] = block["id"]
@@ -1417,7 +1467,13 @@ def cli(argv: list[str]) -> int:
                 print(f"  run total (lead + {len(data['subagents'])} agents)  {run}")
         print()
         for ev in data["events"]:
-            print(f"[{ev['role']}/{ev['kind']}] {ev['text'][:2000]}\n")
+            # an inbound message is nobody's turn in this session: name its sender
+            label = (
+                f"{ev['kind']} from {ev['sender']}"
+                if ev.get("sender")
+                else f"{ev['role']}/{ev['kind']}"
+            )
+            print(f"[{label}] {ev['text'][:2000]}\n")
         return 0
 
     if args.cmd == "list":

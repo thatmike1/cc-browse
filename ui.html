@@ -20,6 +20,7 @@
     --accent-dim: #8a6435;
     --user: #82b8ea;
     --assistant: #9fd4a4;
+    --agent: #b79ae0;
     --mark: #f0c987;
     --r-sm: 7px;
     --r: 10px;
@@ -292,6 +293,18 @@
     border-radius: 0 var(--r-sm) var(--r-sm) 0; padding: 9px 12px 9px 14px;
   }
   .ev.assistant .body { border-left-color: var(--assistant); }
+  /* a message another claude session delivered into this one — neither side of
+     the conversation, so it gets a colour neither of them uses */
+  .ev.agent_message .who { color: var(--agent); display: flex; align-items: center; gap: 7px; }
+  .ev.agent_message .who .badge {
+    font-size: 11px; letter-spacing: .06em; font-weight: 500;
+    color: var(--faint); border: 1px solid var(--line);
+    border-radius: var(--r-sm); padding: 1px 6px;
+  }
+  .ev.agent_message .body {
+    border-left-color: var(--agent); background: rgba(183,154,224,.05);
+    border-radius: 0 var(--r-sm) var(--r-sm) 0; padding: 9px 12px 9px 14px;
+  }
   .ev.thinking .body, .ev.tool .body, .ev.tool_result .body {
     color: var(--faint); font-size: 12px; font-family: ui-monospace, monospace;
     max-height: 150px; overflow: hidden;
@@ -1002,7 +1015,11 @@ function eventsHtml(events, { stamps = true } = {}) {
       html += `<div class="stamp">${dayLabel(day)}</div>`;
       lastDay = day;
     }
-    const who = e.kind === 'text' ? (e.role === 'user' ? 'you' : 'claude') : e.kind.replace('_', ' ');
+    // an inbound message names the session that sent it; the badge is what keeps
+    // it from reading as something the user typed
+    const who = e.kind === 'agent_message'
+      ? `${esc(e.sender || 'another session')}<span class="badge">agent message</span>`
+      : e.kind === 'text' ? (e.role === 'user' ? 'you' : 'claude') : e.kind.replace('_', ' ');
     const cls = e.kind === 'text' ? e.role : e.kind;
     html += `<div class="ev ${cls}" data-kind="${e.kind}">
       <div class="who">${who}</div><div class="body">${md(e.text)}</div></div>`;
