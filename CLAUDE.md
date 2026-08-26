@@ -81,6 +81,35 @@ subagent with its owner. Nested spawns are written flat into the same session-le
 Subagent rows are searchable but never listable: `BASE_FILTERS` pins listing to
 `kind = 'session'`.
 
+## Token accounting
+
+`scan_file` keys usage by `message.id`, not by line: one API response is written to
+several adjacent lines carrying the *same* totals, so summing lines double-counts.
+Ids without the `msg_` prefix are client-side `<synthetic>` placeholders and never
+billed. Cache writes are split by TTL because a 1h write costs 2x base input and a
+5m write 1.25x — one bucket for both misprices whichever kind dominates.
+
+The row stores per-model token buckets only. **Cost is read-time**, from `PRICES` in
+`ccbrowse.py`, so a price edit needs no `SCHEMA_VERSION` bump and no rebuild. An
+unpriced model makes `usage_cost` return `None` — tokens with no cost beside them,
+never a partial sum.
+
+`{"type": "cost-state"}` records in recent logs are a useful oracle for the
+arithmetic: the multipliers reproduce their per-model `costUSD` exactly. Their
+totals can still run ahead of one transcript's own usage, so they check the
+formula, not the coverage.
+
+## Lanes
+
+A lane spans the agent's own file's first→last message timestamp. Never derive the
+end from the parent's `tool_result`: a background-spawned `Task` returns its result
+when the child *launches*. Lanes anchor on the subagent's own `created` rather than
+on a spawning tool call, because named team agents have no `toolUseId` at all.
+
+"Running" is decided by a fresh `os.stat` at request time, not by the row's
+`modified` — the indexed value lags a growing file by up to `REFRESH_SECS`, which is
+why `ACTIVE_SECS` is larger than it.
+
 ## Titles
 
 Precedence in `scan_file`: `custom-title` → sidecar `description` → sidecar `name` →

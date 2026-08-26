@@ -41,6 +41,13 @@ show up in a diff or in an API response. There is no test suite to lean on.
   min/max aggregate. Details and the exact failure modes are in `CLAUDE.md`.
 - A subagent log records its *parent's* `sessionId`; row ids come from the file path.
 
+## Tokens and lanes
+
+Usage is keyed by `message.id` (the same response is written to several lines with
+identical totals) and cache writes are split by TTL. Cost is computed at read time
+from `PRICES`, so changing a price needs no schema bump. A lane's end comes from the
+agent's own transcript, never the parent's `tool_result` — details in `CLAUDE.md`.
+
 ## Editing `ui.html`
 
 No framework, no npm, no build step — that constraint is the product, not an accident.

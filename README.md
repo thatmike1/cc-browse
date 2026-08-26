@@ -135,6 +135,36 @@ subagent that spawns its own subagents writes them flat into the same
 session-level `subagents/` tree — so the path resolves to the top-level session,
 and the sidecar's `parentAgentId` is what records the immediate spawner.
 
+## Tokens, cost and lanes
+
+Every assistant message records what the API charged for it, so indexing keeps a
+per-model token bucket for each transcript: input, cache writes split by TTL,
+cache reads and output. One API response is written to several adjacent JSONL
+lines with the same totals, so the buckets are keyed by response id rather than
+summed line by line; ids without the `msg_` prefix are client-side placeholders
+that never went to the API and are skipped.
+
+Cost is computed when you look at it, from a small price table in the script, and
+never stored. Prices change and a stored cost would freeze them, while the token
+buckets stay recomputable forever. A model with no entry in the table shows its
+tokens and no cost rather than a wrong one. The figures are notional: a
+subscription bills against usage limits, not per token, so they are for comparing
+one run with another.
+
+The cost lands in three places: the ambient figure on each list row, a chip in the
+detail header covering the whole run (lead plus every agent it spawned, with a
+per-model breakdown behind a click), and a line on each subagent panel.
+
+A delegated session also gets a **lanes** view: one row per agent on a shared
+timeline, so you can see what ran in parallel and what waited. A lane spans its
+own transcript's first and last message. It is deliberately not derived from the
+parent's `tool_result`, because a background-spawned `Task` reports back when the
+child *launches*, not when it finishes — that reading makes every backgrounded
+agent look instantaneous. An agent whose log was written to in the last minute or
+so counts as running: its bar loses its right edge and keeps growing, and the
+block re-polls while anything is live. The token figure beside a running bar
+comes from the last index pass, so it lags the bar; the header says how old it is.
+
 ## Indexing
 
 The first run scans every `*.jsonl` under `~/.claude/projects/` across a process
@@ -207,6 +237,8 @@ reader can do.
 - Semantic matching is topical, not conceptual. Abstract phrasings drift.
 - The CLI can answer from a stale cache. It tells you, but it does answer.
 - Highlighting inside a transcript stops at 2,000 marks; the counter shows a `+`.
+- Costs are list-price arithmetic over the tokens in the logs. They do not know
+  about subscriptions, discounts, or usage a transcript never recorded.
 - Benchmarks above were measured on one Linux x86 machine and are there for
   orders of magnitude, not as universal facts.
 

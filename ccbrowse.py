@@ -41,10 +41,15 @@ CACHE_DB = Path.home() / ".cache" / "cc-browse" / "index.db"
 VEC_FILE = CACHE_DB.parent / "vectors.npy"
 UI_FILE = Path(__file__).parent / "ui.html"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # how often the background thread re-runs the incremental index
 REFRESH_SECS = 60
+
+# a log written to within this many seconds is treated as a live agent. it has
+# to clear REFRESH_SECS: the indexed `modified` lags a growing file by up to one
+# refresh pass, so liveness is decided from a fresh stat, not from the row.
+ACTIVE_SECS = 90
 
 # static embeddings: a token-lookup distillation, no transformer forward pass.
 # ~0.03 ms/message, which is what makes indexing the whole corpus practical.
@@ -228,6 +233,8 @@ def scan_file(path_str: str) -> dict | None:
         "n_tool": 0,
         "sidechain": 0,
     }
+    # api response id -> (model, in, cache-write 1h, cache-write 5m, cache read, out)
+    usage: dict[str, tuple[str, int, int, int, int, int]] = {}
     tail: list[dict] = []
     docs: list[tuple[str, int, str]] = []  # (role, seq, text)
     seq = 0
@@ -294,6 +301,33 @@ def scan_file(path_str: str) -> dict | None:
                 text = clean_prompt(text)
             else:
                 rec["n_assistant"] += 1
+                # one api response is written to several adjacent lines carrying
+                # the *same* totals (repeated, not streaming deltas), so key the
+                # usage by response id and let the last write win. only ids with
+                # the `msg_` prefix are api responses: client-side `<synthetic>`
+                # placeholders (refusals and the like) carry a bare uuid and a
+                # usage object they never actually spent.
+                mid = str(msg.get("id") or "")
+                u = msg.get("usage")
+                if mid.startswith("msg_") and isinstance(u, dict):
+                    cw = u.get("cache_creation")
+                    if isinstance(cw, dict):
+                        # a 1h cache write costs 2x base input and a 5m one
+                        # 1.25x, so the two kinds cannot share a bucket
+                        w1h = int(cw.get("ephemeral_1h_input_tokens") or 0)
+                        w5m = int(cw.get("ephemeral_5m_input_tokens") or 0)
+                    else:
+                        # no split recorded: price the whole write at the cheaper
+                        # ttl rather than dropping it
+                        w1h, w5m = 0, int(u.get("cache_creation_input_tokens") or 0)
+                    usage[mid] = (
+                        str(msg.get("model") or ""),
+                        int(u.get("input_tokens") or 0),
+                        w1h,
+                        w5m,
+                        int(u.get("cache_read_input_tokens") or 0),
+                        int(u.get("output_tokens") or 0),
+                    )
 
             if text:
                 seq += 1
@@ -310,6 +344,17 @@ def scan_file(path_str: str) -> dict | None:
             encoded = path.parent.name
         rec["project"] = "/" + encoded.lstrip("-").replace("-", "/")
     rec["tail"] = json.dumps(tail)
+    by_model: dict[str, dict[str, int]] = {}
+    for model, tin, w1h, w5m, cr, out in usage.values():
+        b = by_model.setdefault(
+            model, {"in": 0, "cw1h": 0, "cw5m": 0, "cr": 0, "out": 0}
+        )
+        b["in"] += tin
+        b["cw1h"] += w1h
+        b["cw5m"] += w5m
+        b["cr"] += cr
+        b["out"] += out
+    rec["usage"] = json.dumps(by_model) if by_model else ""
     # a title the user typed outranks anything generated; for a subagent the
     # sidecar's description is the closest thing to one
     rec["title"] = (
@@ -338,7 +383,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     custom_title TEXT, ai_title TEXT, summary TEXT, first_prompt TEXT, title TEXT,
     created TEXT, modified TEXT, day TEXT,
     n_user INTEGER, n_assistant INTEGER, n_tool INTEGER, sidechain INTEGER,
-    tail TEXT
+    tail TEXT, usage TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_modified ON sessions(modified DESC);
 CREATE INDEX IF NOT EXISTS idx_project ON sessions(project);
@@ -357,8 +402,104 @@ COLUMNS = [
     "project", "branch",
     "custom_title", "ai_title", "summary", "first_prompt", "title",
     "created", "modified", "day",
-    "n_user", "n_assistant", "n_tool", "sidechain", "tail",
+    "n_user", "n_assistant", "n_tool", "sidechain", "tail", "usage",
 ]
+
+
+# usd per million tokens, (base input, output), published list prices. the
+# longest matching prefix wins so dated variants of a model resolve to it.
+# costs computed from these are notional — a subscription bills against usage
+# limits, not per token — and exist to compare one run with another.
+PRICES = {
+    "claude-fable-5": (10.0, 50.0),
+    "claude-mythos-5": (10.0, 50.0),
+    "claude-opus-": (5.0, 25.0),
+    "claude-sonnet-5": (3.0, 15.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-sonnet-4-5": (3.0, 15.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+}
+# multipliers on the base input price. a 1h cache write costs 2x and a 5m write
+# 1.25x, so lumping the two would misprice whichever kind dominates.
+CACHE_WRITE_1H_MULT = 2.0
+CACHE_WRITE_5M_MULT = 1.25
+CACHE_READ_MULT = 0.1
+
+USAGE_FIELDS = ("in", "cw1h", "cw5m", "cr", "out")
+
+
+def usage_merge(usages) -> dict[str, dict[str, int]]:
+    """several rows' buckets summed into one — a run is lead plus its agents."""
+    out: dict[str, dict[str, int]] = {}
+    for j in usages:
+        for model, b in _usage_buckets(j).items():
+            t = out.setdefault(model, {k: 0 for k in USAGE_FIELDS})
+            for k in USAGE_FIELDS:
+                t[k] += int(b.get(k) or 0)
+    return out
+
+
+def is_active(path: str) -> bool:
+    """was this transcript written to just now? (a running agent)"""
+    try:
+        return (datetime.now(timezone.utc).timestamp() - os.stat(path).st_mtime) < ACTIVE_SECS
+    except OSError:
+        return False
+
+
+def _price_for(model: str) -> tuple[float, float] | None:
+    best: tuple[float, float] | None = None
+    best_len = -1
+    for prefix, price in PRICES.items():
+        if model.startswith(prefix) and len(prefix) > best_len:
+            best, best_len = price, len(prefix)
+    return best
+
+
+def _usage_buckets(usage) -> dict[str, dict[str, int]]:
+    """the stored json blob, or an already-parsed one, as per-model buckets."""
+    if isinstance(usage, dict):
+        return usage
+    try:
+        d = json.loads(usage or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def usage_totals(usage) -> dict[str, int]:
+    """the per-model buckets summed into one figure per token kind."""
+    out = {k: 0 for k in USAGE_FIELDS}
+    for b in _usage_buckets(usage).values():
+        for k in USAGE_FIELDS:
+            out[k] += int(b.get(k) or 0)
+    out["total"] = sum(out[k] for k in USAGE_FIELDS)
+    return out
+
+
+def usage_cost(usage) -> float | None:
+    """usd for these buckets, or None when any model in them has no price.
+
+    None rather than a partial sum: a figure that silently omits one model is
+    worse than showing the tokens with no cost beside them.
+    """
+    buckets = _usage_buckets(usage)
+    if not buckets:
+        return None
+    total = 0.0
+    for model, b in buckets.items():
+        price = _price_for(model)
+        if price is None:
+            return None
+        base, out_price = price
+        total += (
+            int(b.get("in") or 0) * base
+            + int(b.get("cw1h") or 0) * base * CACHE_WRITE_1H_MULT
+            + int(b.get("cw5m") or 0) * base * CACHE_WRITE_5M_MULT
+            + int(b.get("cr") or 0) * base * CACHE_READ_MULT
+            + int(b.get("out") or 0) * out_price
+        )
+    return total / 1_000_000
 
 
 def _remove_db() -> None:
@@ -607,7 +748,13 @@ def load_vectors(con):
     if not VEC_FILE.exists():
         return None, None
     matrix = np.load(VEC_FILE, mmap_mode="r")
-    rows = [r["rid"] for r in con.execute("SELECT rid FROM vec_rows ORDER BY i")]
+    try:
+        rows = [r["rid"] for r in con.execute("SELECT rid FROM vec_rows ORDER BY i")]
+    except sqlite3.OperationalError:
+        # a schema bump deletes the database — and with it vec_rows — but not
+        # vectors.npy, so the file can outlive its row mapping. that is "no
+        # semantic index", not a 500 for every request.
+        return None, None
     if len(rows) != matrix.shape[0]:
         return None, None
     _vec_state.update(matrix=matrix, rows=rows, fingerprint=fp)
@@ -736,6 +883,9 @@ def _filters(project: str, branch: str, since: str, titled: str) -> tuple[str, l
 def _shape(d: dict) -> dict:
     """one raw result row -> what the api hands back."""
     d["tail"] = json.loads(d["tail"] or "[]")
+    usage = d.pop("usage", "")
+    d["tokens"] = usage_totals(usage)["total"]
+    d["cost"] = usage_cost(usage)
     d["titled"] = bool(d.pop("custom_title") or d.pop("ai_title") or d.pop("summary"))
     d["via_subagent"] = 1 if d.pop("n_via", d.get("via_subagent", 0)) else 0
     d.pop("score", None)
@@ -751,7 +901,7 @@ def list_sessions(
     cols = (
         "s.session_id, s.project, s.branch, s.title, s.custom_title, s.ai_title,"
         " s.summary, s.first_prompt, s.created, s.modified, s.day, s.n_user,"
-        " s.n_assistant, s.n_tool, s.size, s.tail"
+        " s.n_assistant, s.n_tool, s.size, s.tail, s.usage"
     )
 
     # an id is an identity, not a phrase: it resolves in every mode, and only
@@ -945,7 +1095,8 @@ def agent_tool_calls(path: Path) -> dict[str, str]:
 def subagents_of(con, session_id: str, path: str = "") -> list[dict]:
     rows = con.execute(
         "SELECT session_id, agent_id, agent_type, agent_name, model, spawn_depth,"
-        " parent_agent_id, tool_use_id, title, n_user, n_assistant, created"
+        " parent_agent_id, tool_use_id, title, n_user, n_assistant, created,"
+        " modified, description, path, usage"
         " FROM sessions WHERE kind = 'subagent' AND parent_id = ?"
         " AND (n_user + n_assistant) > 0 ORDER BY created, session_id",
         (session_id,),
@@ -969,8 +1120,16 @@ def subagents_of(con, session_id: str, path: str = "") -> list[dict]:
             "spawn_depth": r["spawn_depth"],
             "parent_agent_id": r["parent_agent_id"],
             "title": r["title"],
+            "description": r["description"],
             "n_events": r["n_user"] + r["n_assistant"],
             "started": r["created"],
+            # the lane's own end. never the parent's tool_result: a
+            # background-spawned Task reports back when the child *launches*.
+            "ended": r["modified"],
+            "active": is_active(r["path"]),
+            "usage": _usage_buckets(r["usage"]),
+            "tokens": usage_totals(r["usage"])["total"],
+            "cost": usage_cost(r["usage"]),
             "tool_use_id": r["tool_use_id"] or links.get(r["agent_id"], ""),
         }
         for r in rows
@@ -1023,9 +1182,22 @@ def full_session(con, session_id: str) -> dict:
                     ev["tool"] = block.get("name", "")
                 events.append(ev)
     meta = {k: row[k] for k in row.keys() if k != "tail"}
-    out = {"meta": meta, "events": events}
+    meta["usage"] = _usage_buckets(row["usage"])
+    meta["tokens"] = usage_totals(row["usage"])["total"]
+    meta["cost"] = usage_cost(row["usage"])
+    meta["active"] = is_active(row["path"])
+    stamp = con.execute("SELECT v FROM meta WHERE k = 'indexed_at'").fetchone()
+    out = {"meta": meta, "events": events, "indexed_at": stamp["v"] if stamp else ""}
     if row["kind"] == "session":
-        out["subagents"] = subagents_of(con, session_id, row["path"])
+        subs = subagents_of(con, session_id, row["path"])
+        out["subagents"] = subs
+        # the figure the run is judged on: lead plus every agent it spawned.
+        # summed as buckets, not as costs, so an unpriced model nulls the whole
+        # run rather than quietly dropping out of it
+        run = usage_merge([row["usage"]] + [s["usage"] for s in subs])
+        out["run_usage"] = run
+        out["run_tokens"] = usage_totals(run)["total"]
+        out["run_cost"] = usage_cost(run)
     return out
 
 
@@ -1147,6 +1319,30 @@ class Handler(BaseHTTPRequestHandler):
 SUBCOMMANDS = ("search", "show", "list")
 
 
+def fmt_tokens(n: int) -> str:
+    """610k / 2.4M — one decimal above a million, none below."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1000:
+        return f"{n // 1000}k"
+    return str(n)
+
+
+def fmt_cost(c: float | None) -> str:
+    if c is None:
+        return ""
+    if c < 0.01:
+        return "<1c"
+    return f"${c:,.2f}" if c < 100 else f"${c:,.0f}"
+
+
+def _fmt_usage(tokens: int, cost: float | None) -> str:
+    if not tokens:
+        return ""
+    bits = f"{fmt_tokens(tokens)} tok"
+    return f"{bits} · {fmt_cost(cost)}" if cost is not None else bits
+
+
 def _fmt_row(d: dict) -> str:
     bits = [f"{d['session_id'][:8]}  {d['modified'][:16].replace('T', ' ')}"]
     n = d["n_user"] + d["n_assistant"]
@@ -1193,9 +1389,17 @@ def cli(argv: list[str]) -> int:
             print(data["error"], file=sys.stderr)
             return 1
         m = data["meta"]
-        print(f"{m['title']}\n{m['session_id']}  {m['project']}  {m['modified'][:16]}")
+        own = _fmt_usage(m.get("tokens", 0), m.get("cost"))
+        print(f"{m['title']}\n{m['session_id']}  {m['project']}  {m['modified'][:16]}"
+              + (f"  {own}" if own else ""))
         for sa in data.get("subagents", []):
-            print(f"  subagent {sa['id']}  {sa['n_events']:>4} msg  {sa['title'][:70]}")
+            use = _fmt_usage(sa["tokens"], sa["cost"])
+            print(f"  subagent {sa['id']}  {sa['n_events']:>4} msg  {sa['title'][:70]}"
+                  + (f"  {use}" if use else ""))
+        if data.get("subagents"):
+            run = _fmt_usage(data.get("run_tokens", 0), data.get("run_cost"))
+            if run:
+                print(f"  run total (lead + {len(data['subagents'])} agents)  {run}")
         print()
         for ev in data["events"]:
             print(f"[{ev['role']}/{ev['kind']}] {ev['text'][:2000]}\n")
