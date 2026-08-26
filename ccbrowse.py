@@ -542,6 +542,39 @@ def usage_cost(usage) -> float | None:
     return total / 1_000_000
 
 
+def _cost_sql(alias: str = "s") -> str:
+    """`usage_cost` as a scalar subquery, so a row can be sorted or filtered by it.
+
+    The python version stays the authority for what the api reports; this one
+    exists because ordering and a threshold have to happen before the page is
+    cut, and it must agree with it — including returning NULL when any model in
+    the blob has no price, rather than a partial sum that looks cheap.
+    Longest-prefix wins by ordering the CASE arms longest first; no price key
+    contains a LIKE wildcard, so the prefixes go in unescaped.
+    """
+    arms = []
+    for prefix, (base, out_price) in sorted(PRICES.items(), key=lambda kv: -len(kv[0])):
+        rate = " + ".join(
+            f"COALESCE(json_extract(e.value, '$.{field}'), 0) * {mult}"
+            for field, mult in (
+                ("in", base),
+                ("cw1h", base * CACHE_WRITE_1H_MULT),
+                ("cw5m", base * CACHE_WRITE_5M_MULT),
+                ("cr", base * CACHE_READ_MULT),
+                ("out", out_price),
+            )
+        )
+        arms.append(f"WHEN e.key LIKE '{prefix}%' THEN ({rate})")
+    case = "CASE " + " ".join(arms) + " END"
+    # json_each raises on a blank or malformed blob, and COUNT(x) < COUNT(*)
+    # means some model fell through the CASE to NULL — the whole sum is void
+    return (
+        "(SELECT CASE WHEN COUNT(*) = COUNT(x) THEN SUM(x) / 1000000.0 END"
+        f" FROM (SELECT {case} AS x FROM json_each("
+        f"CASE WHEN json_valid({alias}.usage) THEN {alias}.usage ELSE '{{}}' END) e))"
+    )
+
+
 def _remove_db() -> None:
     """drop the cache *and its wal sidecars* — a stale wal fails the next open."""
     for suffix in ("", "-wal", "-shm"):
@@ -895,11 +928,17 @@ def id_lookup(con, q: str, cols: str) -> list:
 
 # already qualified with the `s` alias: an expression cannot take one as a
 # prefix, so `ORDER BY s.` + the value would be a syntax error for the counts
+COST = _cost_sql()
+
 SORTS = {
     "recent": "s.modified DESC",
     "oldest": "s.modified ASC",
     "longest": "(s.n_user + s.n_assistant) DESC",
     "shortest": "(s.n_user + s.n_assistant) ASC",
+    # an unpriced session has no cost at all, so it belongs at the bottom of
+    # either direction rather than sorting as if it were free
+    "costly": f"{COST} DESC",
+    "cheapest": f"{COST} IS NULL, {COST} ASC",
 }
 
 
@@ -913,7 +952,8 @@ LANE_COUNT = (
 
 
 def _filters(
-    project: str, branch: str, since: str, titled: str, lanes: str = ""
+    project: str, branch: str, since: str, titled: str, lanes: str = "",
+    mincost: str = "",
 ) -> tuple[str, list]:
     where = list(BASE_FILTERS)
     args: list = []
@@ -930,6 +970,16 @@ def _filters(
         where.append("(custom_title != '' OR ai_title != '' OR summary != '')")
     if lanes == "1":
         where.append(f"{LANE_COUNT} > 0")
+    if mincost:
+        try:
+            floor = float(mincost)
+        except ValueError:
+            floor = 0.0
+        if floor > 0:
+            # NULL fails the comparison, which is the wanted answer: a session
+            # whose cost is unknown cannot be shown to clear a threshold
+            where.append(f"{COST} >= ?")
+            args.append(floor)
     return " AND ".join(where), args
 
 
@@ -946,10 +996,10 @@ def _shape(d: dict) -> dict:
 
 
 def list_sessions(
-    con, q="", project="", branch="", since="", titled="", lanes="", mode="meta",
-    sort="recent", limit=100, offset=0,
+    con, q="", project="", branch="", since="", titled="", lanes="", mincost="",
+    mode="meta", sort="recent", limit=100, offset=0,
 ) -> dict:
-    clause, args = _filters(project, branch, since, titled, lanes)
+    clause, args = _filters(project, branch, since, titled, lanes, mincost)
     order = SORTS.get(sort, SORTS["recent"])
     cols = (
         "s.session_id, s.project, s.branch, s.title, s.custom_title, s.ai_title,"
@@ -993,6 +1043,16 @@ def list_sessions(
                 key=lambda d: d["n_user"] + d["n_assistant"],
                 reverse=sort == "longest",
             )
+        elif sort in ("costly", "cheapest"):
+            def cost_key(d):
+                # an unpriced session sits at the bottom of either direction,
+                # the same way the sql sorts push its NULL cost down
+                c = usage_cost(d["usage"])
+                if c is None:
+                    return (1, 0.0)
+                return (0, -c if sort == "costly" else c)
+
+            merged.sort(key=cost_key)
         else:
             merged.sort(key=lambda d: d["modified"], reverse=sort != "oldest")
         page = merged[offset : offset + limit]
@@ -1347,6 +1407,7 @@ class Handler(BaseHTTPRequestHandler):
                         since=one("since"),
                         titled=one("titled"),
                         lanes=one("lanes"),
+                        mincost=one("mincost"),
                         mode=one("mode", "meta"),
                         sort=one("sort", "recent"),
                         limit=min(int(one("limit", "100")), 300),

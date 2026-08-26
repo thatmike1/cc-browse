@@ -602,6 +602,12 @@
       <button data-v="" class="on">any</button>
       <button data-v="1">with lanes</button>
     </div>
+    <div class="seg" id="mincost">
+      <button data-v="" class="on">any cost</button>
+      <button data-v="0.5">over $0.50</button>
+      <button data-v="2">over $2</button>
+      <button data-v="10">over $10</button>
+    </div>
     <div class="stats" id="stats" style="padding:0;margin-left:auto"></div>
   </div>
 </header>
@@ -672,7 +678,7 @@ const listEl = $('#list'), convoEl = $('#convo');
 
 const state = {
   q: '', mode: 'meta', project: '', branch: '', since: '', titled: '', lanes: '',
-  sort: 'recent',
+  mincost: '', sort: 'recent',
 };
 let sessions = [], offset = 0, total = 0, loading = false, done = false;
 let activeId = null, cursor = -1;
@@ -683,6 +689,7 @@ let pendingRefresh = null;
 const SORTS = [
   ['recent', 'newest first'], ['oldest', 'oldest first'],
   ['longest', 'longest first'], ['shortest', 'shortest first'],
+  ['costly', 'most expensive'], ['cheapest', 'cheapest first'],
   ['relevance', 'best match'],
 ];
 
@@ -914,6 +921,7 @@ segment('since', 'since', sinceISO);
 segment('titled', 'titled');
 // the detail pane already owns #lanes, so the filter's own id has to differ
 segment('haslanes', 'lanes');
+segment('mincost', 'mincost');
 
 // popovers
 function closeAllPops(except) {
