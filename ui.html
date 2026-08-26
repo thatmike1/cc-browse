@@ -334,6 +334,9 @@
   .sub-t .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sub-t .n { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
   .sub-body { padding: 10px 9px 2px 13px; border-left: 1px solid var(--line-soft); margin: 4px 0 8px 15px; }
+  /* arriving from a lane click lands mid-transcript; say where it landed */
+  .sub.landed > .sub-t { animation: landed 1.1s var(--ease); }
+  @keyframes landed { from { background: var(--mark); } to { background: transparent; } }
 
   /* ---------- lanes ---------- */
   #lanes { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 18px 26px 60px; }
@@ -415,7 +418,9 @@
   #lanetip .s { color: var(--faint); margin-bottom: 10px; }
   #lanetip dl { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; }
   #lanetip dd { text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
-  #lanetip .open { margin-top: 11px; color: var(--accent); }
+  /* the tip tracks the cursor and is pointer-events: none, so nothing in it can be
+     clicked — this line states what the lane does, it is not a link */
+  #lanetip .open { margin-top: 11px; color: var(--faint); }
 
   /* ---------- usage breakdown ---------- */
   /* `hidden` loses to a class or id rule that sets display, so say it here */
@@ -1391,7 +1396,7 @@ $('#lanes').addEventListener('mousemove', (e) => {
       <dt>tokens</dt><dd>${fmtTokens(r.tokens)}</dd>
       <dt>cost</dt><dd>${r.cost == null ? '—' : fmtCost(r.cost)}</dd>
     </dl>
-    <div class="open">open transcript →</div>`;
+    <div class="open">click the lane to open its transcript</div>`;
   tipEl.hidden = false;
   const box = tipEl.getBoundingClientRect();
   tipEl.style.left = Math.min(e.clientX + 16, window.innerWidth - box.width - 12) + 'px';
@@ -1410,6 +1415,9 @@ $('#lanes').addEventListener('click', (e) => {
   if (!sub) return;
   if (!sub.classList.contains('open')) $('.sub-t', sub).click();
   sub.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  sub.classList.remove('landed');
+  void sub.offsetWidth;  // restart the animation when the same lane is clicked twice
+  sub.classList.add('landed');
 });
 
 /* ---- the cost chip and its breakdown ---- */
