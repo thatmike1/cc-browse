@@ -863,7 +863,18 @@ SORTS = {
 }
 
 
-def _filters(project: str, branch: str, since: str, titled: str) -> tuple[str, list]:
+# a session has lanes when a subagent transcript names it as its parent. the
+# empty-log guard matches subagents_of, so this count is what the lanes view
+# will actually show; idx_parent keeps the correlated scan cheap per row
+LANE_COUNT = (
+    "(SELECT COUNT(*) FROM sessions a WHERE a.kind = 'subagent'"
+    " AND a.parent_id = s.session_id AND (a.n_user + a.n_assistant) > 0)"
+)
+
+
+def _filters(
+    project: str, branch: str, since: str, titled: str, lanes: str = ""
+) -> tuple[str, list]:
     where = list(BASE_FILTERS)
     args: list = []
     if project:
@@ -877,6 +888,8 @@ def _filters(project: str, branch: str, since: str, titled: str) -> tuple[str, l
         args.append(since)
     if titled == "1":
         where.append("(custom_title != '' OR ai_title != '' OR summary != '')")
+    if lanes == "1":
+        where.append(f"{LANE_COUNT} > 0")
     return " AND ".join(where), args
 
 
@@ -893,15 +906,16 @@ def _shape(d: dict) -> dict:
 
 
 def list_sessions(
-    con, q="", project="", branch="", since="", titled="", mode="meta",
+    con, q="", project="", branch="", since="", titled="", lanes="", mode="meta",
     sort="recent", limit=100, offset=0,
 ) -> dict:
-    clause, args = _filters(project, branch, since, titled)
+    clause, args = _filters(project, branch, since, titled, lanes)
     order = SORTS.get(sort, SORTS["recent"])
     cols = (
         "s.session_id, s.project, s.branch, s.title, s.custom_title, s.ai_title,"
         " s.summary, s.first_prompt, s.created, s.modified, s.day, s.n_user,"
-        " s.n_assistant, s.n_tool, s.size, s.tail, s.usage"
+        " s.n_assistant, s.n_tool, s.size, s.tail, s.usage,"
+        f" {LANE_COUNT} AS n_agents"
     )
 
     # an id is an identity, not a phrase: it resolves in every mode, and only
@@ -1282,6 +1296,7 @@ class Handler(BaseHTTPRequestHandler):
                         branch=one("branch"),
                         since=one("since"),
                         titled=one("titled"),
+                        lanes=one("lanes"),
                         mode=one("mode", "meta"),
                         sort=one("sort", "recent"),
                         limit=min(int(one("limit", "100")), 300),
