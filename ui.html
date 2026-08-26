@@ -867,7 +867,9 @@ function rowHtml(s, i) {
     ? `<div class="snip">${unmark(s.snip)}</div>`
     : (() => {
         const t = s.tail && s.tail.length ? s.tail[s.tail.length - 1] : null;
-        return t ? `<div class="snip"><b class="who">${t.role === 'user' ? 'you' : 'claude'}:</b> ${esc(t.text.slice(0, 220))}</div>` : '';
+        // a tail line carrying a sender came from another session, not from here
+        const who = t && t.sender ? esc(t.sender) : (t && t.role === 'user' ? 'you' : 'claude');
+        return t ? `<div class="snip"><b class="who">${who}:</b> ${esc(t.text.slice(0, 220))}</div>` : '';
       })();
   const title = state.mode === 'meta' && state.q
     ? highlight(esc(s.title || '(empty)'), state.q) : esc(s.title || '(empty)');

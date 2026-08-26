@@ -41,7 +41,7 @@ CACHE_DB = Path.home() / ".cache" / "cc-browse" / "index.db"
 VEC_FILE = CACHE_DB.parent / "vectors.npy"
 UI_FILE = Path(__file__).parent / "ui.html"
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # how often the background thread re-runs the incremental index
 REFRESH_SECS = 60
@@ -322,6 +322,7 @@ def scan_file(path_str: str) -> dict | None:
             rec["n_tool"] += sum(1 for k, _ in parts if k == "tool")
             text = " ".join(t for k, t in parts if k == "text" and t).strip()
 
+            sender = ""
             if kind == "user":
                 rec["n_user"] += 1
                 # tool results are echoed as user turns; they are not prompts
@@ -334,7 +335,7 @@ def scan_file(path_str: str) -> dict | None:
                 if inbound:
                     # another session talking to this one: never the title, and
                     # only the payload is worth indexing — the rest is boilerplate
-                    text = inbound[1]
+                    sender, text = inbound
                 else:
                     if text and not rec["first_prompt"]:
                         rec["first_prompt"] = clean_prompt(text)[:300]
@@ -372,7 +373,12 @@ def scan_file(path_str: str) -> dict | None:
             if text:
                 seq += 1
                 docs.append((kind, seq, text[:FTS_CHARS]))
-                tail.append({"role": kind, "text": text[:TAIL_CHARS]})
+                entry = {"role": kind, "text": text[:TAIL_CHARS]}
+                if sender:
+                    # the list preview labels this line with who sent it instead
+                    # of "you" — it is not a turn anyone typed in this session
+                    entry["sender"] = sender
+                tail.append(entry)
                 if len(tail) > TAIL_KEEP:
                     tail.pop(0)
 
