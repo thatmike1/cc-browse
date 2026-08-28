@@ -522,6 +522,67 @@
   .tl-cell.ink, .tl-cell.ink .c { color: var(--bg); }
   .tl-cell.lo, .tl-cell.lo .c { color: var(--text); }
 
+  /* ---------- live board ---------- */
+  /* the board answers "which of these is stopped on me", so it borrows the
+     timeline's cleared header but not its period navigator */
+  /* nothing in the header applies here: the board is everything that is
+     running, and a filter that changed nothing would be worse than no filter */
+  body.live #tlnav, body.live #pop-project, body.live #pop-branch { display: none; }
+  #live { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 18px 26px 60px; }
+  .live-grid {
+    display: grid; gap: 10px;
+    grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  }
+  .live-card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--r); padding: 13px 15px;
+    display: flex; flex-direction: column; gap: 7px;
+  }
+  /* the one card you are meant to see from across the room */
+  .live-card.waiting { border-color: var(--accent-dim); background: var(--raised); }
+  .live-top { display: flex; align-items: baseline; gap: 9px; }
+  .live-card h3 {
+    font-size: 16px; font-weight: 600; letter-spacing: -.011em;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .live-card .meta {
+    display: flex; gap: 7px; align-items: center; flex-wrap: wrap;
+    font-size: 12px; color: var(--faint);
+  }
+  .live-card .meta .proj { color: var(--dim); font-weight: 500; }
+  .live-card .meta .sep { opacity: .45; }
+  .live-card .meta .branch {
+    max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .st {
+    margin-left: auto; flex: none; font-size: 11px; font-weight: 600;
+    letter-spacing: .04em; border-radius: 999px; padding: 2px 9px;
+    border: 1px solid var(--line); color: var(--dim);
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .st i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .st.waiting { color: var(--accent); border-color: var(--accent-dim); }
+  .st.busy { color: var(--assistant); }
+  .st.busy i { animation: lanepulse 1.8s ease-in-out infinite; }
+  .st.idle, .st.shell { color: var(--dim); }
+  /* a status we do not recognise is the absence of a reading, never "fine" */
+  .st.unknown { color: var(--faint); border-style: dashed; }
+  .live-act {
+    font-size: 12px; color: var(--dim); line-height: 1.45;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden; min-height: 34px;
+  }
+  .live-act b { color: var(--text); font-weight: 600; font-family: ui-monospace, monospace; }
+  .live-act.prose { color: var(--faint); font-style: italic; }
+  .live-act .fail { color: var(--accent); font-weight: 600; }
+  .live-act .none { color: var(--faint); opacity: .6; }
+  .live-foot {
+    display: flex; gap: 7px; align-items: center; font-size: 11px;
+    color: var(--faint); font-variant-numeric: tabular-nums;
+    border-top: 1px solid var(--line-soft); padding-top: 7px;
+  }
+  .live-foot .tok { margin-left: auto; }
+
   /* ---------- usage breakdown ---------- */
   /* `hidden` loses to a class or id rule that sets display, so say it here */
   .seg[hidden], .chip[hidden] { display: none; }
@@ -616,6 +677,7 @@
       <button data-v="day">day</button>
       <button data-v="week">week</button>
       <button data-v="month">month</button>
+      <button data-v="live">live</button>
     </div>
 
     <label class="search">
@@ -766,6 +828,7 @@
     </div>
   </div>
   <div id="timeline" hidden></div>
+  <div id="live" hidden></div>
 </main>
 <div id="lanetip" hidden></div>
 <div id="toast"></div>
@@ -988,7 +1051,9 @@ function setFilter(key, value) {
   state[key] = value;
   if (key === 'project') { state.branch = ''; loadFacets(); }
   syncControls();
-  // project/branch also scope the timeline; the other filters are list-only
+  // project/branch also scope the timeline; the other filters are list-only,
+  // and the live board is not filtered at all — it is everything that is running
+  if (view === 'live') return;
   if (view !== 'list' && (key === 'project' || key === 'branch')) loadTimeline();
   else load(true);
 }
@@ -1677,7 +1742,7 @@ $('#jbot').onclick = () => convoEl.scrollTo({ top: convoEl.scrollHeight, behavio
 // rampColor's callers to compare — but cost won: it folds model price in, and
 // the unpriced-run case gets an honest neutral instead of a fake zero.
 const RAMP = ['#634e37', '#856540', '#a57947', '#c58f51', '#dfa45f'];
-const tlEl = $('#timeline');
+const tlEl = $('#timeline'), liveEl = $('#live');
 let view = 'list';
 let tlAnchor = new Date(); tlAnchor.setHours(0, 0, 0, 0);
 let tlData = null, tlReq = 0;
@@ -1710,14 +1775,20 @@ function periodLabel(s, e) {
 
 function setView(v) {
   view = v;
-  const tl = v !== 'list';
-  document.body.classList.toggle('tl', tl);
-  tlEl.hidden = !tl;
-  $('#list').hidden = tl;
-  $('#detail').hidden = tl;
+  const live = v === 'live';
+  // both full-width views clear the list's search and filters out of the header;
+  // only the timeline replaces them with a period navigator
+  const wide = v !== 'list';
+  document.body.classList.toggle('tl', wide);
+  document.body.classList.toggle('live', live);
+  tlEl.hidden = !wide || live;
+  liveEl.hidden = !live;
+  $('#list').hidden = wide;
+  $('#detail').hidden = wide;
   $$('#view button').forEach((b) => b.classList.toggle('on', b.dataset.v === v));
   hideTip();
-  if (tl) loadTimeline();
+  if (live) loadLive();
+  else { stopLivePoll(); if (wide) loadTimeline(); }
 }
 
 $('#view').addEventListener('click', (e) => {
@@ -1925,6 +1996,91 @@ tlEl.addEventListener('click', (e) => {
   const row = e.target.closest('.tl-row');
   if (row) { hideTip(); setView('list'); open(row.dataset.id, 'lanes'); }
 });
+
+/* ---------------- live board ---------------- */
+
+// how long a session has been quiet, in the board's own units: seconds matter
+// here, where `ago` starts at "just now" and stays there for a whole minute
+function quietLabel(sec) {
+  if (sec == null) return '';
+  if (sec < 90) return sec + 's quiet';
+  return fmtDur(sec * 1000) + ' quiet';
+}
+
+const STATUS_TEXT = {
+  waiting: 'blocked on you', busy: 'working', idle: 'idle',
+  shell: 'shell running', unknown: 'unknown',
+};
+
+function actHtml(a) {
+  if (!a || !a.kind) return '<div class="live-act"><span class="none">no transcript to read</span></div>';
+  const label = a.label ? `<b>${esc(a.label)}</b>` : '';
+  const sep = a.label && a.detail ? ' <span class="sep">·</span> ' : '';
+  const fail = a.failed ? ' <span class="fail">failed</span>' : '';
+  return `<div class="live-act ${esc(a.kind)}">${label}${sep}${esc(a.detail)}${fail}</div>`;
+}
+
+function liveCardHtml(s) {
+  const st = s.status;
+  const pill = st === 'waiting' && s.waiting_for ? s.waiting_for : (STATUS_TEXT[st] || st);
+  return `<div class="live-card ${esc(st)}">
+    <div class="live-top">
+      <h3 title="${esc(s.title || '')}">${esc(s.name || shortProj(s.project))}</h3>
+      <span class="st ${esc(st)}"><i></i>${esc(pill)}</span>
+    </div>
+    <div class="meta">
+      <span class="proj">${esc(shortProj(s.project))}</span>
+      ${s.branch ? `<span class="sep">·</span><span class="branch">${esc(s.branch)}</span>` : ''}
+    </div>
+    ${actHtml(s.activity)}
+    <div class="live-foot">
+      <span>${esc(quietLabel(s.quiet_for))}</span>
+      <span class="sep">·</span><span>pid ${esc(s.pid)}</span>
+      ${s.tokens == null
+        ? '<span class="tok" title="this session started after the last index pass">not indexed yet</span>'
+        : `<span class="tok" title="the whole run: this session plus every agent it spawned">${fmtTokens(s.tokens)} tokens</span>`}
+    </div>
+  </div>`;
+}
+
+function renderLive(d) {
+  const rows = (d && d.sessions) || [];
+  if (!rows.length) {
+    liveEl.innerHTML = `<div class="placeholder" style="height:60vh">
+      <div class="hint">no claude code sessions running on this machine</div></div>`;
+    return;
+  }
+  const blocked = rows.filter((r) => r.status === 'waiting').length;
+  liveEl.innerHTML = `<div class="tl-head">
+      <b>${rows.length}</b> session${rows.length > 1 ? 's' : ''} running
+      ${blocked ? `<span class="sep">·</span><b>${blocked}</b> blocked on you` : ''}
+    </div>
+    <div class="live-grid">${rows.map(liveCardHtml).join('')}</div>`;
+}
+
+// view-scoped and self-cancelling, like the lane poll: the board is the only
+// thing here that has to keep asking, and it stops the moment you leave it
+let liveTimer = null, liveReq = 0;
+
+function stopLivePoll() {
+  clearTimeout(liveTimer);
+  liveTimer = null;
+}
+
+async function loadLive() {
+  stopLivePoll();
+  const req = ++liveReq;
+  if (!liveEl.innerHTML) {
+    liveEl.innerHTML = '<div class="skeleton"><div style="width:40%"></div><div style="width:85%"></div><div style="width:70%"></div></div>';
+  }
+  try {
+    const d = await fetch('/api/live').then((x) => x.json());
+    if (req !== liveReq || view !== 'live') return;
+    if (d && d.error) liveEl.innerHTML = `<div class="placeholder" style="height:60vh"><div class="hint">${esc(d.error)}</div></div>`;
+    else renderLive(d);
+  } catch (e) { /* a poll that fails leaves the last board on screen */ }
+  if (req === liveReq && view === 'live') liveTimer = setTimeout(loadLive, 4000);
+}
 
 /* ---------------- keyboard ---------------- */
 

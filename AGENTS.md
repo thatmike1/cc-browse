@@ -41,6 +41,22 @@ show up in a diff or in an API response. There is no test suite to lean on.
   min/max aggregate. Details and the exact failure modes are in `CLAUDE.md`.
 - A subagent log records its *parent's* `sessionId`; row ids come from the file path.
 
+## The live board
+
+`/api/live` reads `~/.claude/sessions/<pid>.json` — undocumented Claude Code internals,
+so parse defensively. A status outside `waiting / busy / shell / idle`, including a
+missing one, becomes `unknown` and sorts below `idle`; never map it onto `idle`.
+Liveness is the pid *plus* `procStart` against field 22 of `/proc/<pid>/stat`, which is
+what catches a reused pid. The endpoint writes nothing, needs no schema bump, and must
+not wait on the refresh loop — a session younger than one index pass still belongs on
+the board.
+
+The activity line comes from `activity_of`, a bounded reverse read of the transcript.
+Open `tool_use` calls are matched before any other case, a finished call shows the call
+and never the result body, and `_clause` cuts from the head. The indexed `tail` cannot
+serve this: it stores prose only and drops exactly the in-flight tool call that matters.
+Details and the reasoning are in `CLAUDE.md`.
+
 ## Tokens and lanes
 
 Usage is keyed by `message.id` (the same response is written to several lines with

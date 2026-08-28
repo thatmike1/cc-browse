@@ -110,6 +110,61 @@ on a spawning tool call, because named team agents have no `toolUseId` at all.
 `modified` — the indexed value lags a growing file by up to `REFRESH_SECS`, which is
 why `ACTIVE_SECS` is larger than it.
 
+## The live board
+
+`/api/live` reads `~/.claude/sessions/<pid>.json`, the registry each running Claude
+Code session rewrites whenever its own status changes. This is **undocumented
+internals**: field names can move between releases with no notice.
+
+- **A status is only ever what the file says.** Anything outside
+  `waiting / busy / shell / idle` — including a missing or empty one — becomes
+  `unknown`, which sorts *below* `idle` and renders as a dashed grey pill. Never map
+  an unreadable status onto `idle`: a session that stops reporting must look
+  unreadable, not fine.
+- **Liveness is the pid plus its start time**, not the pid alone. `procStart` in the
+  file equals field 22 of `/proc/<pid>/stat`, and comparing them is what catches a
+  stale file whose pid has since been reused. `proc_start` counts fields from the
+  last `)` because the comm field can contain spaces and parentheses.
+- **The endpoint never waits on the refresh loop.** A session that started a minute
+  ago has no indexed row yet and still belongs on the board — `transcript_path`
+  derives its log from the cwd (every character outside `[A-Za-z0-9]` becomes a
+  dash) so the activity line works before the index catches up.
+- **The endpoint writes nothing and needs no schema bump.** It reads live files plus
+  the existing index.
+
+`claude agents --json` prints the same rows and verifies liveness itself, which makes
+it the cross-check when the pid files stop parsing. It is not the poller: it spawns a
+~200 MB binary per call.
+
+### The activity line
+
+The registry says a session is busy, never what it is busy *with*. That comes from
+`activity_of`, a bounded reverse read of the transcript, and the rule is that **the
+line names the work, not the bytes** — one clause, always with a subject.
+
+- **Open calls are matched before anything else.** A `tool_use` with no `tool_result`
+  after it is the most valuable line on the board and the one thing the registry can
+  never say. It has to be decided first, or a result arriving for one of three calls
+  reads as "just finished" while two are still running.
+- **A finished call shows the call, never the result body.** Results are enormous and
+  usually a wall of file contents. The outcome is appended only when it is bad.
+- Four cases are worded — call in flight, call just finished, assistant prose, a
+  prompt with no reply. Thinking, compaction and subagent recursion fall back to a
+  bare `working`; an unreadable transcript renders an empty column, because an empty
+  column is honest and a guessed one is not.
+- `_clause` cuts from the **head**: a truncated command still reads from its head and
+  is meaningless from its middle. Its quote-balancing is off by default and on only
+  for shell text — in prose every apostrophe looks like an unclosed quote and the
+  backtrack throws away most of the line.
+- The indexed `tail` cannot serve this. `scan_file` stores prose only: it joins
+  `text` blocks, skips tool-result-only user turns and never stores thinking, so the
+  in-flight tool call is exactly what it drops.
+
+The front end polls `/api/live` every 4 s and only while the board is visible —
+`loadLive` is view-scoped and self-cancelling, the same contract as
+`scheduleLanePoll`. Polling rather than SSE: the server is a stdlib
+`ThreadingHTTPServer`, so every SSE client would pin a thread for its lifetime.
+
 ## Titles
 
 Precedence in `scan_file`: `custom-title` → sidecar `description` → sidecar `name` →

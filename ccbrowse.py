@@ -1454,6 +1454,372 @@ def subagents_of(con, session_id: str, path: str = "") -> list[dict]:
     ]
 
 
+# ---------------------------------------------------------------- live board
+
+# claude code writes one file per running session here and rewrites it whenever
+# that session's own status changes. this is undocumented internals: field names
+# can move between releases, so everything below parses defensively and a status
+# it does not recognise becomes `unknown` rather than a state we claim to know.
+SESSIONS_DIR = Path.home() / ".claude" / "sessions"
+
+# how much of a live transcript's tail to read for the activity line. enough to
+# hold a whole turn's blocks, small enough that polling every live session every
+# few seconds costs nothing.
+LIVE_TAIL_BYTES = 64 * 1024
+
+# the activity line is one clause, cut from the head
+ACTIVITY_CHARS = 90
+
+# waiting first: the board exists to show which session is stopped on you.
+# `unknown` sorts below idle because it is the absence of a reading, not a state.
+STATUS_ORDER = {"waiting": 0, "busy": 1, "shell": 2, "idle": 3, "unknown": 4}
+
+_SENTENCE = re.compile(r"[.!?](?=\s|$)")
+
+
+def proc_start(pid: int) -> str | None:
+    """field 22 of `/proc/<pid>/stat` — when the process started, in clock ticks.
+
+    the registry records this next to the pid, and comparing the two is the only
+    thing that catches a stale file whose pid has since been reused. the comm
+    field can contain spaces and parentheses, so the fields are counted from the
+    last `)` rather than by splitting the whole line.
+    """
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    fields = raw.rpartition(")")[2].split()
+    return fields[19] if len(fields) > 19 else None
+
+
+def pid_alive(pid: int, procstart: str = "") -> bool:
+    """is the process that wrote this registry file still the one holding the pid?
+
+    `/proc` settles it. off linux there is no start time to compare against, so
+    signal 0 is the most that can be said and a pid reused since the file was
+    written would pass — which is why the start time is preferred where it exists.
+    """
+    if pid <= 0:
+        return False
+    start = proc_start(pid)
+    if start is not None:
+        return not procstart or start == procstart
+    if Path("/proc").is_dir():
+        return False  # linux, and the process is simply gone
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        pass  # exists but is not ours to signal
+    return True
+
+
+def transcript_path(session_id: str, cwd: str = "") -> Path | None:
+    """the log a live session is writing, for one the index has not seen yet.
+
+    claude code names a project directory after the cwd with every character
+    outside `[A-Za-z0-9]` replaced by a dash, so the path is derivable without a
+    scan; the glob is the fallback for a session whose cwd is not what it was.
+    """
+    if cwd:
+        p = PROJECTS / re.sub(r"[^a-zA-Z0-9]", "-", cwd) / f"{session_id}.jsonl"
+        if p.exists():
+            return p
+    return next(PROJECTS.glob(f"*/{session_id}.jsonl"), None)
+
+
+def tail_records(path: Path, limit: int = LIVE_TAIL_BYTES) -> list[dict]:
+    """the last few records of a transcript, parsed, still in file order.
+
+    a bounded read from the end rather than `scan_file`'s forward pass over the
+    whole file: this runs for every live session every few seconds. the first
+    line of the window is dropped because the window starts mid-line, and any
+    line that fails to decode is dropped too — the file may be mid-write.
+    """
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - limit))
+            chunk = fh.read()
+    except OSError:
+        return []
+    lines = chunk.split(b"\n")
+    if size > limit and lines:
+        lines.pop(0)
+    out = []
+    for raw in lines:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            d = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if isinstance(d, dict):
+            out.append(d)
+    return out
+
+
+def _content(rec: dict) -> list:
+    """the content blocks of one transcript record, or an empty list."""
+    msg = rec.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if not isinstance(content, list):
+        return []
+    return [b for b in content if isinstance(b, dict)]
+
+
+def open_tool_calls(recs: list[dict]) -> list[dict]:
+    """the `tool_use` blocks in this window that no `tool_result` answers yet.
+
+    this is the one thing the registry can never say — it knows a session is
+    busy, never what it is busy with. nothing else in the repo computes it:
+    `agent_tool_calls` pairs a dispatch with the agent it spawned, a different
+    edge. a result always follows its call, so a window holding the call holds
+    the result too if one has come back.
+    """
+    answered = {
+        b["tool_use_id"]
+        for d in recs
+        for b in _content(d)
+        if b.get("type") == "tool_result" and b.get("tool_use_id")
+    }
+    return [
+        b
+        for d in recs
+        if d.get("type") == "assistant"
+        for b in _content(d)
+        if b.get("type") == "tool_use" and b.get("id") not in answered
+    ]
+
+
+def _tool_hint(block: dict) -> tuple[str, str]:
+    """(tool name, the input that identifies the call) for one `tool_use` block.
+
+    `block_text` already picks the right input with the right precedence; this
+    splits its one string back apart and loses its 200-char cap, which is two
+    lines too long for a card.
+    """
+    _, text = block_text(block)
+    name, _, hint = text.partition(": ")
+    # a bare absolute path is the one hint whose head is the useless part: every
+    # one of them opens with the same home directory. the tail names the file.
+    if hint.startswith("/") and not any(c.isspace() for c in hint):
+        parts = hint.rstrip("/").split("/")
+        if len(parts) > 3:
+            hint = ".../" + "/".join(parts[-2:])
+    return name, hint
+
+
+def _clause(text, cap: int = ACTIVITY_CHARS, quoted: bool = False) -> str:
+    """one line of detail: whitespace collapsed, cut at a sentence end or `cap`.
+
+    cut from the head, because the head is the part that stays legible — a
+    truncated command still reads (`grep -rn "SCHEMA_VERSION" --include…`) and
+    its middle does not.
+
+    `quoted` is for text that came out of a shell command, where a cut landing
+    inside a quoted string leaves a stray quote on screen. it is off for prose,
+    where every apostrophe would otherwise look like an unclosed quote and throw
+    away most of the line. even then the backtrack is refused when it would cost
+    more than a third of the budget: a stray quote reads better than three words.
+    """
+    t = " ".join(str(text or "").split())
+    m = _SENTENCE.search(t)
+    if m and m.end() <= cap:
+        return t[: m.end()]
+    if len(t) <= cap:
+        return t
+    cut = t[:cap]
+    if quoted:
+        for ch in ('"', "'", "`"):
+            if cut.count(ch) % 2:
+                back = cut[: cut.rindex(ch)]
+                if len(back) >= cap * 2 // 3:
+                    cut = back
+    return cut.rstrip() + "…"
+
+
+# a card is a glance surface, so emphasis markers are noise rather than emphasis
+_MD_MARKS = re.compile(r"\*\*|`|(?<=\s)[*_](?=\S)|(?<=\S)[*_](?=\s|$)")
+
+
+def _call_by_id(recs: list[dict], tool_use_id: str) -> dict | None:
+    for d in recs:
+        if d.get("type") != "assistant":
+            continue
+        for b in _content(d):
+            if b.get("type") == "tool_use" and b.get("id") == tool_use_id:
+                return b
+    return None
+
+
+def activity_of(path: Path | None) -> dict:
+    """what a live session is doing right now: `{kind, label, detail, failed}`.
+
+    the line names the work, never the bytes — one clause with a subject, so the
+    board stays readable at a glance. four cases are worded: a tool call in
+    flight, a tool that just finished, assistant prose mid-turn, and a prompt
+    with no reply yet. everything else (thinking, compaction, a subagent
+    dispatch) falls back to a bare `working`. an empty `kind` means the
+    transcript could not be read at all; an empty column is honest, a guessed
+    one is not.
+    """
+    blank = {"kind": "", "label": "", "detail": "", "failed": False}
+    if path is None:
+        return blank
+    recs = tail_records(path)
+    if not recs:
+        return blank
+
+    # the most valuable line on the board, so it is decided before the walk back:
+    # a result arriving for one of three calls must not read as "just finished"
+    calls = open_tool_calls(recs)
+    if calls:
+        name, hint = _tool_hint(calls[0])
+        label = f"{name} ×{len(calls)}" if len(calls) > 1 else name
+        return {
+            "kind": "tool", "label": label,
+            "detail": _clause(hint, quoted=True), "failed": False,
+        }
+
+    for d in reversed(recs):
+        kind = d.get("type")
+        if kind not in ("user", "assistant"):
+            continue
+        blocks = message_blocks(d.get("message") or {})
+        if not blocks:
+            continue
+        if kind == "user":
+            res = next((b for k, _, b in blocks if k == "tool_result"), None)
+            if res is not None:
+                # the call, never the result body: results are enormous and
+                # usually a wall of file contents. the outcome only when it is bad
+                call = _call_by_id(recs, res.get("tool_use_id", ""))
+                if call is None:
+                    break
+                name, hint = _tool_hint(call)
+                return {
+                    "kind": "done", "label": name,
+                    "detail": _clause(hint, quoted=True),
+                    "failed": bool(res.get("is_error")),
+                }
+            text = next((t for k, t, _ in blocks if k == "text" and t.strip()), "")
+            if not text:
+                continue
+            # a message from another session is that session's ask, not the
+            # user's — labelling it "asked" would credit the wrong sender
+            inbound = inbound_message(text)
+            sender, body = inbound if inbound else ("asked", text)
+            ask = _clause(_MD_MARKS.sub("", clean_prompt(body)))
+            if not ask:
+                break  # a turn that was only wrappers says nothing worth showing
+            return {"kind": "ask", "label": sender, "detail": ask, "failed": False}
+        text = next(
+            (t for k, t, _ in reversed(blocks) if k == "text" and t.strip()), ""
+        )
+        if text:
+            # the one case where the model's own words are the best summary
+            return {
+                "kind": "prose", "label": "",
+                "detail": _clause(_MD_MARKS.sub("", text)), "failed": False,
+            }
+        break  # thinking only, or blocks with nothing to say
+
+    return {"kind": "working", "label": "working", "detail": "", "failed": False}
+
+
+def registry_rows() -> list[dict]:
+    """every parseable session file whose process is still the one that wrote it."""
+    out = []
+    for f in sorted(SESSIONS_DIR.glob("*.json")):
+        try:
+            d = json.loads(f.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(d, dict) or not d.get("sessionId"):
+            continue
+        try:
+            pid = int(d.get("pid") or 0)
+        except (TypeError, ValueError):
+            continue
+        if pid_alive(pid, str(d.get("procStart") or "")):
+            out.append(d)
+    return out
+
+
+def live_sessions(con) -> dict:
+    """one row per claude code session running on this machine, right now.
+
+    state comes from the registry — a fact each session wrote about itself,
+    which is why "blocked on you" is read here rather than inferred from a
+    timestamp. substance comes from a bounded read of the transcript, and the
+    title, project and token totals from the index when it has caught up.
+
+    it deliberately does not wait on the refresh loop: a session a minute old has
+    no indexed row yet and still belongs on the board, with its activity line
+    standing in for the title it does not have.
+    """
+    regs = registry_rows()
+    ids = [str(d["sessionId"]) for d in regs]
+    rows: dict[str, sqlite3.Row] = {}
+    subs: dict[str, list] = {}
+    if ids:
+        marks = ",".join("?" * len(ids))
+        for r in con.execute(
+            "SELECT session_id, path, title, project, branch, usage"
+            f" FROM sessions WHERE kind = 'session' AND session_id IN ({marks})",
+            ids,
+        ):
+            rows[r["session_id"]] = r
+        for r in con.execute(
+            "SELECT parent_id, usage FROM sessions WHERE kind = 'subagent'"
+            f" AND parent_id IN ({marks})",
+            ids,
+        ):
+            subs.setdefault(r["parent_id"], []).append(r["usage"])
+
+    now = datetime.now(timezone.utc).timestamp()
+    out = []
+    for d in regs:
+        sid = str(d["sessionId"])
+        row = rows.get(sid)
+        cwd = str(d.get("cwd") or "")
+        path = Path(row["path"]) if row else transcript_path(sid, cwd)
+        try:
+            quiet = int(now - path.stat().st_mtime) if path else None
+        except OSError:
+            quiet = None
+        status = str(d.get("status") or "")
+        if status not in STATUS_ORDER:
+            status = "unknown"
+        usage = usage_merge([row["usage"], *subs.get(sid, [])]) if row else {}
+        out.append({
+            "session_id": sid,
+            "pid": int(d["pid"]),
+            "name": str(d.get("name") or ""),
+            "session_kind": str(d.get("kind") or ""),
+            "title": row["title"] if row else "",
+            "project": row["project"] if row else cwd,
+            "branch": row["branch"] if row else "",
+            "indexed": row is not None,
+            "status": status,
+            "waiting_for": str(d.get("waitingFor") or ""),
+            "quiet_for": quiet,
+            "activity": activity_of(path),
+            # lead plus every agent it spawned, the figure a run is judged on
+            "tokens": usage_totals(usage)["total"] if row else None,
+            "cost": usage_cost(usage) if row else None,
+        })
+    # blocked first, and within a group the one that has been quiet longest —
+    # for `waiting` that is the one that has been sitting on you the longest
+    out.sort(key=lambda r: (STATUS_ORDER[r["status"]], -(r["quiet_for"] or 0)))
+    return {"sessions": out}
+
+
 def full_session(con, session_id: str) -> dict:
     row = con.execute(
         "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
@@ -1636,6 +2002,9 @@ class Handler(BaseHTTPRequestHandler):
                 sid = unquote(url.path.rsplit("/", 1)[-1])
                 with self.lock:
                     self._json(full_session(self.con, sid))
+            elif url.path == "/api/live":
+                with self.lock:
+                    self._json(live_sessions(self.con))
             elif url.path == "/api/status":
                 with self.lock:
                     self._json(status(self.con))

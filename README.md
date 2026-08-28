@@ -52,6 +52,42 @@ While the server runs it re-indexes in the background every 60 seconds. New
 conversations never swap the list out from under you — you get a pill offering
 them.
 
+## Live
+
+The `live` view is a board of what is running on this machine right now: one card
+per Claude Code session, sorted so anything blocked on you is at the top.
+
+Claude Code keeps its own registry of running sessions — one small file per
+session, rewritten whenever that session's state changes — so "this one is
+sitting on a permission prompt" is a fact read off disk rather than guessed from
+a timestamp. Each card carries the session's name and project, a status pill,
+what it is doing, how long it has been quiet, and the run's token count. Nothing
+has to be installed for this: no hook, no configuration change, no API call.
+
+The status pill says `blocked on you` and names the kind of block — a permission
+prompt, a worker request, a dialog. A status the registry does not report, or one
+this tool does not recognise, shows as `unknown` rather than as idle: the
+registry is undocumented internals and a session that stops reporting should look
+unreadable, not fine.
+
+The line under it is the point of the board, and it comes from the transcript
+rather than the registry:
+
+```
+Bash · npm run build -- --profile        a call that is still running
+Bash · npm test -- --run  failed         the call that just came back
+Grep ×3 · SCHEMA_VERSION                 three calls out, the first one named
+asked · rebuild the day view             a prompt with no reply yet
+The vectors line up with the new rowids. the model mid-sentence
+```
+
+Thinking, compaction and delegated work currently fall back to a plain
+`working`. When a transcript cannot be read the line is left empty instead of
+guessed.
+
+The board polls every few seconds, and only while you are looking at it. It reads
+files and writes nothing.
+
 ## Search
 
 **`titles`** matches titles, first prompts, project paths and branch names. Fast,
