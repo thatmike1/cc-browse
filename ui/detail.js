@@ -375,8 +375,10 @@ function showView(v) {
   $('#lanes').hidden = !lanes;
   convoEl.hidden = lanes;
   $('#jump').style.display = lanes ? 'none' : 'flex';
-  if (lanes) { findEl.hidden = true; hideTip(); }
-  if (lanes) renderLanes();
+  // the lanes have nothing to find in, but the marks and the n/N position are
+  // still live behind them — coming back has to show the bar that owns them
+  findEl.hidden = lanes || !findSource;
+  if (lanes) { hideTip(); renderLanes(); }
   scheduleLanePoll();
 }
 
@@ -411,9 +413,20 @@ function scheduleLanePoll() {
 
 /* ---- hover tooltip + click through to the transcript ---- */
 
-export const tipEl = $('#lanetip');
+// the node stays private, the way every other dom handle in ui/ does; what
+// crosses a module boundary is the behaviour, so the clamp lives in one place
+const tipEl = $('#lanetip');
 
 export function hideTip() { tipEl.hidden = true; }
+
+export function showTip(html, e) {
+  tipEl.innerHTML = html;
+  tipEl.hidden = false;
+  // measured after it is filled and shown, or the box is the last tip's size
+  const box = tipEl.getBoundingClientRect();
+  tipEl.style.left = Math.min(e.clientX + 16, window.innerWidth - box.width - 12) + 'px';
+  tipEl.style.top = Math.min(e.clientY + 16, window.innerHeight - box.height - 12) + 'px';
+}
 
 $('#lanes').addEventListener('mousemove', (e) => {
   const lane = e.target.closest('.lane');
@@ -421,18 +434,14 @@ $('#lanes').addEventListener('mousemove', (e) => {
   const r = laneRows(detail)[+lane.dataset.lane];
   if (!r) { hideTip(); return; }
   const start = +new Date(r.start), end = r.active ? Date.now() : (+new Date(r.end) || start);
-  tipEl.innerHTML = `<div class="t">${esc(r.desc || r.name)}</div>
+  showTip(`<div class="t">${esc(r.desc || r.name)}</div>
     <div class="s">${esc([modelLabel(r.model), r.depth ? 'spawn depth ' + r.depth : '', r.events + ' events'].filter(Boolean).join(' · '))}</div>
     <dl>
       <dt>ran</dt><dd>${hhmm(start)} → ${r.active ? 'now' : hhmm(end)} · ${fmtDur(end - start)}</dd>
       <dt>tokens</dt><dd>${fmtTokens(r.tokens)}</dd>
       <dt>cost</dt><dd>${r.cost == null ? '—' : fmtCost(r.cost)}</dd>
     </dl>
-    <div class="open">click the lane to open its transcript</div>`;
-  tipEl.hidden = false;
-  const box = tipEl.getBoundingClientRect();
-  tipEl.style.left = Math.min(e.clientX + 16, window.innerWidth - box.width - 12) + 'px';
-  tipEl.style.top = Math.min(e.clientY + 16, window.innerHeight - box.height - 12) + 'px';
+    <div class="open">click the lane to open its transcript</div>`, e);
 });
 $('#lanes').addEventListener('mouseleave', hideTip);
 
@@ -502,7 +511,15 @@ export async function openSession(id, want = 'transcript') {
   $('#creader').hidden = false;
   convoEl.innerHTML = '<div class="wrap skeleton">' + '<div style="width:35%"></div><div style="width:92%"></div><div style="width:76%"></div>'.repeat(5) + '</div>';
 
-  const d = await fetch('/api/session/' + id).then((x) => x.json());
+  let d;
+  try {
+    d = await fetch('/api/session/' + id).then((x) => x.json());
+  } catch (e) {
+    // a dead daemon has to land somewhere: the skeleton on its own reads as
+    // "still loading" and never stops
+    if (ui.activeId === id) convoEl.innerHTML = '<div class="placeholder"><div class="hint">the server did not answer — is cc-browse still running?</div></div>';
+    return;
+  }
   if (ui.activeId !== id) return;  // a faster click won the race
   if (d.error) { convoEl.innerHTML = `<div class="placeholder">${esc(d.error)}</div>`; return; }
 

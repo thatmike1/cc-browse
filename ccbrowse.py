@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import mimetypes
 import os
 import re
 import sqlite3
@@ -2724,10 +2725,15 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path.startswith("/ui/"):
                 f = (UI_DIR / url.path[len("/ui/") :]).resolve()
                 if f.is_file() and f.is_relative_to(UI_DIR.resolve()):
-                    ctype = {
-                        ".css": "text/css; charset=utf-8",
-                        ".js": "text/javascript; charset=utf-8",
-                    }.get(f.suffix, "application/octet-stream")
+                    # a hand-written map goes stale the first time the ui grows
+                    # an svg or a font, and it fails by serving the wrong type
+                    # rather than by 404ing, which is the harder bug to see
+                    guess = mimetypes.guess_type(f.name)[0] or "application/octet-stream"
+                    ctype = (
+                        f"{guess}; charset=utf-8"
+                        if guess.startswith("text/") or guess.endswith(("javascript", "json", "+xml"))
+                        else guess
+                    )
                     self._send(200, f.read_bytes(), ctype)
                 else:
                     self._json({"error": "not found"}, 404)

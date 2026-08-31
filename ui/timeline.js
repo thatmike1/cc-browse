@@ -3,7 +3,7 @@ import {
   tickLabel,
 } from './helpers.js';
 import { state, ui } from './state.js';
-import { hideTip, openSession, tipEl } from './detail.js';
+import { hideTip, openSession, showTip } from './detail.js';
 import { loadLive, stopLivePoll } from './live-board.js';
 
 // sequential cost ramp: one hue (the accent), dim -> bright, validated for the
@@ -241,7 +241,7 @@ tlEl.addEventListener('mousemove', (e) => {
   const r = (tlData.sessions || []).find((x) => x.id === row.dataset.id);
   if (!r) { hideTip(); return; }
   const start = +new Date(r.created), end = r.active ? Date.now() : +new Date(r.modified);
-  tipEl.innerHTML = `<div class="t">${esc(r.title || '(untitled)')}</div>
+  showTip(`<div class="t">${esc(r.title || '(untitled)')}</div>
     <div class="s">${esc([shortProj(r.project), r.n_msgs + ' msgs'].join(' · '))}</div>
     <dl>
       <dt>ran</dt><dd>${hhmm(start)} → ${r.active ? 'now' : hhmm(end)} · ${fmtDur(end - start)}</dd>
@@ -249,11 +249,7 @@ tlEl.addEventListener('mousemove', (e) => {
       <dt>tokens</dt><dd>${fmtTokens(r.tokens)}</dd>
       <dt>cost</dt><dd>${r.cost == null ? '—' : fmtCost(r.cost)}</dd>
     </dl>
-    <div class="open">click to open ${r.n_agents ? 'the lane view' : 'the transcript'}</div>`;
-  tipEl.hidden = false;
-  const box = tipEl.getBoundingClientRect();
-  tipEl.style.left = Math.min(e.clientX + 16, window.innerWidth - box.width - 12) + 'px';
-  tipEl.style.top = Math.min(e.clientY + 16, window.innerHeight - box.height - 12) + 'px';
+    <div class="open">click to open ${r.n_agents ? 'the lane view' : 'the transcript'}</div>`, e);
 });
 tlEl.addEventListener('mouseleave', hideTip);
 

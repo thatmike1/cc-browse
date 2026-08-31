@@ -1,12 +1,12 @@
 # UI direction, settled 31 August 2026
 
 Five changes, agreed off the design canvas. `mockups/` holds a static HTML
-mockup per change, built on the real tokens from `ui.html` — open one in a
+mockup per change, built on the real tokens from `ui/styles.css` — open one in a
 browser, or read it for exact colours, spacing and control heights. The mockups
 show the look; this file carries the intent, which a mockup cannot state.
 
-Colour, radius and control-height values in the mockups are lifted from
-`ui.html`'s `:root`. Do not round them.
+Colour, radius and control-height values in the mockups are lifted from the
+`:root` block in `ui/styles.css`. Do not round them.
 
 ## 1. Scope drawer replaces the top-bar filter row
 
@@ -117,9 +117,8 @@ drawn, reviewed and dropped.
 
 ## Sequencing
 
-The `ui.html` split into `ui.html` + `ui.css` + ES modules lands first;
-everything here is new code that should go into the resulting modules rather
-than into the 2151-line file.
+The `ui.html` split into `ui.html` + `ui/styles.css` + ES modules landed as
+`ad27380`; everything here is new code that goes into those modules.
 
 Then: 1–3 are pure front-end and can go together. 4 needs a small endpoint in
 `ccbrowse.py` reading the status stash. 5 needs the schema work and is its own

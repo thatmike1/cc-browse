@@ -135,7 +135,10 @@ function apply(scoping) {
 
 async function pullFacets() {
   const p = new URLSearchParams(state.project ? { project: state.project } : {});
-  try { facets = await fetch('/api/facets?' + p).then((r) => r.json()); } catch (e) { return; }
+  let f;
+  try { f = await fetch('/api/facets?' + p).then((r) => r.json()); } catch (e) { return; }
+  if (!f || !f.projects) return;  // an error envelope has no lists to render
+  facets = f;
   renderProjects();
   renderBranches();
 }

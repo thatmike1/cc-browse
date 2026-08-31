@@ -3,7 +3,9 @@ import { ui } from './state.js';
 
 const liveEl = $('#live');
 
-// the board's own number words. the rest of the ui runs units together ("6s")
+// how long a session has been quiet, in the board's own units: seconds matter
+// here, where `ago` starts at "just now" and stays there for a whole minute.
+// the board's own number words: the rest of the ui runs units together ("6s")
 // where this surface spaces them, and a cache countdown stays in minutes long
 // after a duration would have rolled over to hours.
 const pad2 = (n) => String(n).padStart(2, '0');

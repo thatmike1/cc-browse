@@ -5,7 +5,7 @@ import { loadTimeline, setView } from './timeline.js';
 
 const listEl = $('#list');
 
-let offset = 0, total = 0, loading = false, done = false;
+let offset = 0, total = 0, loading = false, done = false, queuedReset = false;
 let facets = { projects: [], branches: [] };
 // never swap the list out from under a read — just offer it
 let pendingRefresh = null;
@@ -115,43 +115,56 @@ function narrow() {
 }
 
 export async function load(reset) {
-  if (loading || (done && !reset)) return;
+  if (loading) {
+    // a reset asked for while a page is in flight is a *different* query, and
+    // dropping it silently is how the refresh pill used to clear itself without
+    // ever loading anything. remember it and run it when the page lands.
+    if (reset) queuedReset = true;
+    return;
+  }
+  if (done && !reset) return;
   loading = true;
-  // a blended list is only worth reading by best match, and a list with no
-  // query is only worth reading by recency — so the two defaults swap together
-  if (state.q && state.sort === 'recent') { state.sort = 'relevance'; syncControls(); }
-  else if (!state.q && state.sort === 'relevance') { state.sort = 'recent'; syncControls(); }
-  if (reset) {
-    offset = 0; ui.sessions = []; done = false; blend = null; hits = []; only = '';
-    listEl.innerHTML = '<div class="skeleton">' + '<div style="width:70%"></div><div style="width:45%"></div><div style="width:88%"></div>'.repeat(4) + '</div>';
-  }
-  const p = new URLSearchParams({ ...state, offset, limit: 60 });
-  let r;
   try {
-    r = await fetch('/api/sessions?' + p).then((x) => x.json());
-  } catch (e) { loading = false; return; }
-  if (reset) listEl.innerHTML = '';
-  if (!r || !r.sessions) {  // the server answered with an error, not a page
-    if (reset) listEl.innerHTML = `<div class="placeholder" style="height:60vh"><div class="hint">${esc(r?.error || 'the server could not answer that')}</div></div>`;
-    done = true; loading = false; renderModes(); renderStats(); return;
+    // a blended list is only worth reading by best match, and a list with no
+    // query is only worth reading by recency — so the two defaults swap together
+    if (state.q && state.sort === 'recent') { state.sort = 'relevance'; syncControls(); }
+    else if (!state.q && state.sort === 'relevance') { state.sort = 'recent'; syncControls(); }
+    if (reset) {
+      offset = 0; ui.sessions = []; done = false; blend = null; hits = []; only = '';
+      listEl.innerHTML = '<div class="skeleton">' + '<div style="width:70%"></div><div style="width:45%"></div><div style="width:88%"></div>'.repeat(4) + '</div>';
+    }
+    const p = new URLSearchParams({ ...state, offset, limit: 60 });
+    let r;
+    try {
+      r = await fetch('/api/sessions?' + p).then((x) => x.json());
+    } catch (e) { return; }
+    // the answer belongs to a query nobody is waiting for any more
+    if (queuedReset) return;
+    if (reset) listEl.innerHTML = '';
+    if (!r || !r.sessions) {  // the server answered with an error, not a page
+      if (reset) listEl.innerHTML = `<div class="placeholder" style="height:60vh"><div class="hint">${esc(r?.error || 'the server could not answer that')}</div></div>`;
+      done = true; renderModes(); renderStats(); return;
+    }
+    total = r.total;
+    if (r.modes) {
+      // blended: every mode's hits arrive in one ranked list, so there is nothing
+      // left to page — the chips work over what is already here
+      blend = r; hits = r.sessions; done = true;
+      narrow();
+    } else {
+      blend = null; hits = [];
+      const start = ui.sessions.length;
+      ui.sessions = ui.sessions.concat(r.sessions);
+      offset += r.sessions.length;
+      if (!r.sessions.length) done = true;
+      if (!ui.sessions.length) empty(); else renderChunk(r.sessions, start);
+      renderModes();
+    }
+    renderStats();
+  } finally {
+    loading = false;
+    if (queuedReset) { queuedReset = false; load(true); }
   }
-  total = r.total;
-  if (r.modes) {
-    // blended: every mode's hits arrive in one ranked list, so there is nothing
-    // left to page — the chips work over what is already here
-    blend = r; hits = r.sessions; done = true;
-    narrow();
-  } else {
-    blend = null; hits = [];
-    const start = ui.sessions.length;
-    ui.sessions = ui.sessions.concat(r.sessions);
-    offset += r.sessions.length;
-    if (!r.sessions.length) done = true;
-    if (!ui.sessions.length) empty(); else renderChunk(r.sessions, start);
-    renderModes();
-  }
-  renderStats();
-  loading = false;
 }
 
 /* ---------------- search mode chips ---------------- */
@@ -290,7 +303,12 @@ setupPop('pop-sort',
 
 export async function loadFacets() {
   const p = new URLSearchParams(state.project ? { project: state.project } : {});
-  facets = await fetch('/api/facets?' + p).then((r) => r.json());
+  let f;
+  try { f = await fetch('/api/facets?' + p).then((r) => r.json()); } catch (e) { return; }
+  // an error envelope has no `projects`, and the popover reading it would throw
+  // long after the request failed — keep the last good facets instead
+  if (!f || !f.projects) return;
+  facets = f;
   renderStats();
 }
 
