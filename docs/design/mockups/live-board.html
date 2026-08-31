@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cc-browse mockup — live board</title>
+<style>
+    :root {
+      --bg:#131218; --panel:#191821; --raised:#201e2a; --hover:#262433;
+      --line:#2e2b3a; --line-soft:#24222e; --text:#ece9f5; --dim:#9c97b0;
+      --faint:#6d6884; --accent:#e0a45f; --accent-dim:#8a6435;
+      --user:#82b8ea; --assistant:#9fd4a4; --agent:#b79ae0; --mark:#f0c987;
+      --r-sm:7px; --r:10px; --r-lg:14px;
+      --shadow:0 12px 36px -8px rgba(0,0,0,.75);
+    }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body {
+      background:var(--bg); color:var(--text);
+      font:14px/1.55 ui-sans-serif,-apple-system,"Segoe UI",sans-serif;
+      -webkit-font-smoothing:antialiased;
+    }
+    a { color:var(--accent); } a:hover { color:var(--mark); }
+    .app { display:flex; flex-direction:column; height:800px; overflow:hidden; }
+    header { flex:none; background:var(--panel); border-bottom:1px solid var(--line); }
+    .bar { display:flex; gap:9px; align-items:center; padding:11px 15px; }
+    .brand { font-size:12px; font-weight:700; letter-spacing:.13em; text-transform:uppercase;
+      color:var(--accent); display:flex; align-items:center; gap:7px; }
+    .brand .dot { width:7px; height:7px; border-radius:50%; background:var(--accent);
+      box-shadow:0 0 0 3px rgba(224,164,95,.16); }
+    .search { flex:1; min-width:190px; display:flex; align-items:center; gap:9px;
+      background:var(--bg); border:1px solid var(--line); border-radius:var(--r);
+      padding:0 11px; height:36px; color:var(--faint); }
+    .kbd { font:600 11px/1 ui-monospace,monospace; color:var(--faint);
+      border:1px solid var(--line); border-radius:5px; padding:3px 5px; background:var(--panel); }
+    .seg { display:flex; background:var(--bg); border:1px solid var(--line);
+      border-radius:var(--r); padding:2px; gap:2px; height:36px; align-items:center; }
+    .seg span { display:flex; align-items:center; padding:0 11px; height:28px;
+      border-radius:var(--r-sm); font-size:12px; color:var(--dim); white-space:nowrap; }
+    .seg span.on { background:var(--raised); color:var(--accent); }
+    .trigger { display:flex; align-items:center; gap:7px; height:36px; padding:0 11px;
+      background:var(--bg); border:1px solid var(--line); border-radius:var(--r);
+      color:var(--dim); font-size:12px; }
+    .trigger.set { color:var(--accent); border-color:var(--accent-dim); }
+    .stats { padding:0 15px 9px; font-size:12px; color:var(--faint);
+      display:flex; gap:7px; align-items:center; }
+    .stats b { color:var(--dim); font-weight:600; font-variant-numeric:tabular-nums; }
+    .stats .sep { opacity:.4; }
+    .pill { display:inline-flex; align-items:center; gap:6px; background:var(--raised);
+      border:1px solid var(--line); border-radius:999px; padding:2px 9px; color:var(--dim); }
+    main { flex:1; display:flex; min-height:0; }
+    .daygroup { padding:12px 8px 7px; font-size:11px; font-weight:700; letter-spacing:.1em;
+      text-transform:uppercase; color:var(--faint); }
+    .row { padding:11px 12px; border-radius:var(--r); border:1px solid transparent; position:relative; }
+    .row.cursor { background:var(--panel); border-color:var(--line-soft); }
+    .row.active { background:var(--raised); border-color:var(--line); }
+    .row.active::before { content:''; position:absolute; left:0; top:12px; bottom:12px;
+      width:2px; border-radius:2px; background:var(--accent); }
+    .row .title { font-size:16px; font-weight:600; letter-spacing:-.011em; line-height:1.35; margin-bottom:5px; }
+    .row .meta { display:flex; gap:7px; align-items:center; font-size:12px; color:var(--faint); margin-bottom:5px; }
+    .row .meta .proj { color:var(--dim); font-weight:500; }
+    .row .meta .sep { opacity:.45; }
+    .row .snip { font-size:12px; color:var(--faint); line-height:1.45; }
+    .row .snip b { color:var(--dim); font-weight:600; }
+    .chip { display:inline-flex; align-items:center; gap:6px; padding:4px 9px;
+      border-radius:var(--r-sm); background:var(--raised); border:1px solid var(--line); color:var(--dim); }
+    .chip.mono { font-family:ui-monospace,monospace; }
+    .tgl { padding:4px 10px; border-radius:var(--r-sm); font-size:12px; color:var(--faint);
+      border:1px solid var(--line); background:var(--raised); }
+    .tgl.on { color:var(--accent); border-color:var(--accent-dim); }
+    mark { background:rgba(224,164,95,.2); color:var(--mark); border-radius:3px; padding:0 2px; }
+    .ev { margin-bottom:15px; }
+    .ev .who { font-size:11px; text-transform:uppercase; letter-spacing:.08em;
+      font-weight:600; margin-bottom:5px; color:var(--faint); }
+    .ev.user .who { color:var(--user); }
+    .ev.assistant .who { color:var(--assistant); }
+    .ev .body { border-left:2px solid var(--line); padding-left:14px; }
+    .ev.user .body { border-left-color:var(--user); background:rgba(130,184,234,.045);
+      border-radius:0 var(--r-sm) var(--r-sm) 0; padding:9px 12px 9px 14px; }
+    .ev.assistant .body { border-left-color:var(--assistant); }
+    .ev.tool .body { color:var(--accent); opacity:.7; font-size:12px; font-family:ui-monospace,monospace; }
+    .mono { font-family:ui-monospace,monospace; }
+    .tnum { font-variant-numeric:tabular-nums; }
+    body { padding: 0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="bar">
+      <span class="brand"><span class="dot"></span>cc-browse</span>
+      <div class="search" style="max-width:380px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg><span style="flex:1">search…</span><span class="kbd">/</span></div>
+      <div style="margin-left:auto; display:flex; gap:9px; align-items:center">
+        <div class="seg"><span>list</span><span>day</span><span>week</span><span>month</span></div>
+        <span style="width:1px; height:22px; background:var(--line)"></span>
+        <span style="display:inline-flex; align-items:center; gap:8px; height:36px; padding:0 12px; border-radius:var(--r); background:var(--accent); border:1px solid var(--accent); color:var(--bg); font-size:13px; font-weight:700">
+          <span style="width:7px; height:7px; border-radius:50%; background:var(--bg)"></span>Live
+          <span class="tnum" style="min-width:18px; height:18px; padding:0 5px; border-radius:9px; background:rgba(19,18,24,.25); color:var(--bg); font-size:11px; font-weight:700; display:inline-flex; align-items:center; justify-content:center">1</span>
+        </span>
+      </div>
+    </div>
+  </header>
+  <main style="flex-direction:column; padding:16px 26px; gap:14px; overflow:hidden">
+    <div style="flex:none; background:var(--raised); border:1px solid var(--accent-dim); border-radius:var(--r-lg); padding:18px 20px; display:flex; gap:20px; align-items:flex-start">
+      <div style="flex:1; min-width:0">
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:9px">
+          <span style="font-size:11px; font-weight:700; letter-spacing:.09em; text-transform:uppercase; color:var(--accent); display:inline-flex; align-items:center; gap:7px"><span style="width:7px; height:7px; border-radius:50%; background:var(--accent)"></span>waiting on you</span>
+          <span class="tnum" style="font-size:12px; color:var(--faint)">since 16:04 · 4 min 12 s</span>
+          <span class="chip" style="font-size:11px; padding:2px 8px">rose-engine</span>
+        </div>
+        <div style="font-size:20px; font-weight:600; letter-spacing:-.015em; line-height:1.3; margin-bottom:11px">Rose Engine — frontier richness after the convergence fix</div>
+        <div style="font-size:14.5px; line-height:1.6; color:var(--dim); border-left:2px solid var(--accent); padding-left:14px">The rosette table has two plausible readings and they produce different frontier counts. Do you want the conservative one that matches docs/frontier-results.md, or the wider one?</div>
+      </div>
+      <div style="width:212px; flex:none; border-left:1px solid var(--line); padding-left:20px; display:flex; flex-direction:column; gap:10px; font-size:12px; color:var(--faint)">
+        <div style="display:flex; justify-content:space-between"><span>running for</span><span class="tnum" style="color:var(--text)">1 h 06 m</span></div>
+        <div style="display:flex; justify-content:space-between"><span>cost</span><span class="tnum" style="color:var(--accent)">$2.14</span></div>
+        <div style="display:flex; justify-content:space-between"><span>agents</span><span class="tnum" style="color:var(--text)">2</span></div>
+        <div style="display:flex; flex-direction:column; gap:5px; margin-top:2px; padding-top:11px; border-top:1px solid var(--line-soft)">
+          <div style="display:flex; justify-content:space-between; align-items:baseline">
+            <span>prompt cache</span><span class="tnum" style="color:var(--text)">41 m left</span>
+          </div>
+          <span style="height:3px; border-radius:2px; background:var(--line-soft); overflow:hidden"><span style="display:block; width:68%; height:3px; background:var(--assistant)"></span></span>
+          <span style="line-height:1.45">1 h TTL · rebuilding it cold costs 86k tokens</span>
+        </div>
+        <span class="chip mono" style="justify-content:center; margin-top:2px">copy resume</span>
+      </div>
+    </div>
+
+    <div style="flex:none; display:flex; align-items:center; gap:14px; padding:0 2px">
+      <span class="daygroup" style="padding:0">Running</span>
+      <span style="flex:1; height:1px; background:var(--line-soft)"></span>
+      <span style="font-size:12px; color:var(--faint)" class="tnum">$0.42 in the last 10 min</span>
+      <span style="display:flex; gap:2px; align-items:flex-end; height:15px">
+        <span style="width:4px; height:5px; background:var(--accent); opacity:.5"></span><span style="width:4px; height:9px; background:var(--accent); opacity:.5"></span><span style="width:4px; height:7px; background:var(--accent); opacity:.5"></span><span style="width:4px; height:13px; background:var(--accent); opacity:.5"></span><span style="width:4px; height:10px; background:var(--accent); opacity:.5"></span><span style="width:4px; height:15px; background:var(--accent)"></span>
+      </span>
+    </div>
+
+    <div style="flex:1; display:flex; flex-direction:column; gap:7px; min-height:0; overflow:hidden">
+      <div style="display:flex; align-items:center; gap:13px; background:var(--panel); border:1px solid var(--line); border-radius:var(--r); padding:11px 15px">
+        <span style="width:8px; height:8px; border-radius:50%; background:var(--assistant); flex:none"></span>
+        <span style="width:172px; flex:none; font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">Pixel Patrol video rig</span>
+        <span style="flex:1; min-width:0; font-size:12px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap"><b class="mono" style="color:var(--text)">Bash</b> ffmpeg -i take5.mkv -vf scale=1920:-2 …</span>
+        <span style="display:flex; gap:2px; align-items:flex-end; height:14px; flex:none">
+          <span style="width:3px; height:4px; background:var(--assistant); opacity:.45"></span><span style="width:3px; height:10px; background:var(--assistant); opacity:.45"></span><span style="width:3px; height:6px; background:var(--assistant); opacity:.45"></span><span style="width:3px; height:14px; background:var(--assistant); opacity:.45"></span><span style="width:3px; height:8px; background:var(--assistant); opacity:.45"></span>
+        </span>
+        <span style="display:inline-flex; align-items:center; gap:6px; flex:none; font-size:11px; color:var(--faint)">
+          <span style="width:34px; height:3px; border-radius:2px; background:var(--line-soft); overflow:hidden"><span style="display:block; width:83%; height:3px; background:var(--assistant)"></span></span>
+          <span class="tnum" style="width:30px">50 m</span>
+        </span>
+        <span class="tnum" style="font-size:11px; color:var(--faint); flex:none; width:40px; text-align:right">6 s</span>
+        <span class="tnum" style="font-size:11px; color:var(--faint); flex:none; width:50px; text-align:right">$4.80</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:13px; background:var(--panel); border:1px solid var(--line); border-radius:var(--r); padding:11px 15px">
+        <span style="width:8px; height:8px; border-radius:50%; background:var(--assistant); flex:none"></span>
+        <span style="width:172px; flex:none; font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">najdizaskok-fe MVP</span>
+        <span style="flex:1; min-width:0; font-size:12px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap"><b class="mono" style="color:var(--text)">Edit</b> src/routes/shift-detail.tsx</span>
+        <span style="display:flex; gap:2px; align-items:flex-end; height:14px; flex:none">
+          <span style="width:3px; height:8px; background:var(--assistant); opacity:.45"></span><span style="width:3px; height:5px; background:var(--assistant); opacity:.45"></span><span style="width:3px; height:12px; background:var(--assistant); opacity:.45"></span><span style="width:3px; height:7px; background:var(--assistant); opacity:.45"></span><span style="width:3px; height:9px; background:var(--assistant); opacity:.45"></span>
+        </span>
+        <span style="display:inline-flex; align-items:center; gap:6px; flex:none; font-size:11px; color:var(--faint)">
+          <span style="width:34px; height:3px; border-radius:2px; background:var(--line-soft); overflow:hidden"><span style="display:block; width:36%; height:3px; background:var(--assistant)"></span></span>
+          <span class="tnum" style="width:30px">21 m</span>
+        </span>
+        <span class="tnum" style="font-size:11px; color:var(--faint); flex:none; width:40px; text-align:right">21 s</span>
+        <span class="tnum" style="font-size:11px; color:var(--faint); flex:none; width:50px; text-align:right">$1.06</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:13px; background:var(--panel); border:1px solid var(--line); border-radius:var(--r); padding:11px 15px">
+        <span style="width:8px; height:8px; border-radius:50%; background:var(--agent); flex:none"></span>
+        <span style="width:172px; flex:none; font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">cc-bench target profile</span>
+        <span style="flex:1; min-width:0; font-size:12px; color:var(--faint); font-style:italic; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">3 subagents out, none reported back yet</span>
+        <span style="display:flex; gap:2px; align-items:flex-end; height:14px; flex:none">
+          <span style="width:3px; height:3px; background:var(--agent); opacity:.35"></span><span style="width:3px; height:3px; background:var(--agent); opacity:.35"></span><span style="width:3px; height:4px; background:var(--agent); opacity:.35"></span><span style="width:3px; height:3px; background:var(--agent); opacity:.35"></span><span style="width:3px; height:3px; background:var(--agent); opacity:.35"></span>
+        </span>
+        <span style="display:inline-flex; align-items:center; gap:6px; flex:none; font-size:11px; color:var(--accent)">
+          <span style="width:34px; height:3px; border-radius:2px; background:var(--line-soft); overflow:hidden"><span style="display:block; width:11%; height:3px; background:var(--accent)"></span></span>
+          <span class="tnum" style="width:30px">6 m</span>
+        </span>
+        <span class="tnum" style="font-size:11px; color:var(--faint); flex:none; width:40px; text-align:right">2 m</span>
+        <span class="tnum" style="font-size:11px; color:var(--faint); flex:none; width:50px; text-align:right">$0.92</span>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:14px; margin-top:5px">
+        <span class="daygroup" style="padding:0">Finished while you were away</span>
+        <span style="flex:1; height:1px; background:var(--line-soft)"></span>
+      </div>
+      <div style="display:flex; align-items:center; gap:13px; border:1px solid var(--line-soft); border-radius:var(--r); padding:11px 15px">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--assistant)" stroke-width="2.6" style="flex:none"><path d="M4 12l5 5L20 7"></path></svg>
+        <span style="width:172px; flex:none; font-size:14px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap">diskzokej deck polish</span>
+        <span style="flex:1; min-width:0; font-size:12px; color:var(--faint); overflow:hidden; text-overflow:ellipsis; white-space:nowrap">ended 12 min ago · 4 files changed, nothing committed</span>
+        <span style="display:inline-flex; align-items:center; gap:6px; flex:none; font-size:11px; color:var(--faint)">
+          <span style="width:34px; height:3px; border-radius:2px; background:var(--line-soft); overflow:hidden"><span style="display:block; width:78%; height:3px; background:var(--faint)"></span></span>
+          <span class="tnum" style="width:30px">47 m</span>
+        </span>
+        <span class="tnum" style="font-size:11px; color:var(--faint); flex:none; width:50px; text-align:right">$5.02</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:13px; border:1px solid var(--line-soft); border-radius:var(--r); padding:11px 15px">
+        <span style="width:8px; height:8px; border-radius:50%; border:1px dashed var(--faint); flex:none"></span>
+        <span style="width:172px; flex:none; font-size:14px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap">scan-to-digital</span>
+        <span style="flex:1; min-width:0; font-size:12px; color:var(--faint); overflow:hidden; text-overflow:ellipsis; white-space:nowrap">status unreadable — registry file untouched since 12:04</span>
+        <span style="display:inline-flex; align-items:center; gap:6px; flex:none; font-size:11px; color:var(--faint)">
+          <span style="width:34px; height:3px; border-radius:2px; background:var(--line-soft)"></span>
+          <span class="tnum" style="width:30px">cold</span>
+        </span>
+        <span class="tnum" style="font-size:11px; color:var(--faint); flex:none; width:50px; text-align:right">$3.30</span>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

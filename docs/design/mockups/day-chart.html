@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cc-browse mockup — day chart</title>
+<style>
+    :root {
+      --bg:#131218; --panel:#191821; --raised:#201e2a; --hover:#262433;
+      --line:#2e2b3a; --line-soft:#24222e; --text:#ece9f5; --dim:#9c97b0;
+      --faint:#6d6884; --accent:#e0a45f; --accent-dim:#8a6435;
+      --user:#82b8ea; --assistant:#9fd4a4; --agent:#b79ae0; --mark:#f0c987;
+      --r-sm:7px; --r:10px; --r-lg:14px;
+      --shadow:0 12px 36px -8px rgba(0,0,0,.75);
+    }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body {
+      background:var(--bg); color:var(--text);
+      font:14px/1.55 ui-sans-serif,-apple-system,"Segoe UI",sans-serif;
+      -webkit-font-smoothing:antialiased;
+    }
+    a { color:var(--accent); } a:hover { color:var(--mark); }
+    .app { display:flex; flex-direction:column; height:800px; overflow:hidden; }
+    header { flex:none; background:var(--panel); border-bottom:1px solid var(--line); }
+    .bar { display:flex; gap:9px; align-items:center; padding:11px 15px; }
+    .brand { font-size:12px; font-weight:700; letter-spacing:.13em; text-transform:uppercase;
+      color:var(--accent); display:flex; align-items:center; gap:7px; }
+    .brand .dot { width:7px; height:7px; border-radius:50%; background:var(--accent);
+      box-shadow:0 0 0 3px rgba(224,164,95,.16); }
+    .search { flex:1; min-width:190px; display:flex; align-items:center; gap:9px;
+      background:var(--bg); border:1px solid var(--line); border-radius:var(--r);
+      padding:0 11px; height:36px; color:var(--faint); }
+    .kbd { font:600 11px/1 ui-monospace,monospace; color:var(--faint);
+      border:1px solid var(--line); border-radius:5px; padding:3px 5px; background:var(--panel); }
+    .seg { display:flex; background:var(--bg); border:1px solid var(--line);
+      border-radius:var(--r); padding:2px; gap:2px; height:36px; align-items:center; }
+    .seg span { display:flex; align-items:center; padding:0 11px; height:28px;
+      border-radius:var(--r-sm); font-size:12px; color:var(--dim); white-space:nowrap; }
+    .seg span.on { background:var(--raised); color:var(--accent); }
+    .trigger { display:flex; align-items:center; gap:7px; height:36px; padding:0 11px;
+      background:var(--bg); border:1px solid var(--line); border-radius:var(--r);
+      color:var(--dim); font-size:12px; }
+    .trigger.set { color:var(--accent); border-color:var(--accent-dim); }
+    .stats { padding:0 15px 9px; font-size:12px; color:var(--faint);
+      display:flex; gap:7px; align-items:center; }
+    .stats b { color:var(--dim); font-weight:600; font-variant-numeric:tabular-nums; }
+    .stats .sep { opacity:.4; }
+    .pill { display:inline-flex; align-items:center; gap:6px; background:var(--raised);
+      border:1px solid var(--line); border-radius:999px; padding:2px 9px; color:var(--dim); }
+    main { flex:1; display:flex; min-height:0; }
+    .daygroup { padding:12px 8px 7px; font-size:11px; font-weight:700; letter-spacing:.1em;
+      text-transform:uppercase; color:var(--faint); }
+    .row { padding:11px 12px; border-radius:var(--r); border:1px solid transparent; position:relative; }
+    .row.cursor { background:var(--panel); border-color:var(--line-soft); }
+    .row.active { background:var(--raised); border-color:var(--line); }
+    .row.active::before { content:''; position:absolute; left:0; top:12px; bottom:12px;
+      width:2px; border-radius:2px; background:var(--accent); }
+    .row .title { font-size:16px; font-weight:600; letter-spacing:-.011em; line-height:1.35; margin-bottom:5px; }
+    .row .meta { display:flex; gap:7px; align-items:center; font-size:12px; color:var(--faint); margin-bottom:5px; }
+    .row .meta .proj { color:var(--dim); font-weight:500; }
+    .row .meta .sep { opacity:.45; }
+    .row .snip { font-size:12px; color:var(--faint); line-height:1.45; }
+    .row .snip b { color:var(--dim); font-weight:600; }
+    .chip { display:inline-flex; align-items:center; gap:6px; padding:4px 9px;
+      border-radius:var(--r-sm); background:var(--raised); border:1px solid var(--line); color:var(--dim); }
+    .chip.mono { font-family:ui-monospace,monospace; }
+    .tgl { padding:4px 10px; border-radius:var(--r-sm); font-size:12px; color:var(--faint);
+      border:1px solid var(--line); background:var(--raised); }
+    .tgl.on { color:var(--accent); border-color:var(--accent-dim); }
+    mark { background:rgba(224,164,95,.2); color:var(--mark); border-radius:3px; padding:0 2px; }
+    .ev { margin-bottom:15px; }
+    .ev .who { font-size:11px; text-transform:uppercase; letter-spacing:.08em;
+      font-weight:600; margin-bottom:5px; color:var(--faint); }
+    .ev.user .who { color:var(--user); }
+    .ev.assistant .who { color:var(--assistant); }
+    .ev .body { border-left:2px solid var(--line); padding-left:14px; }
+    .ev.user .body { border-left-color:var(--user); background:rgba(130,184,234,.045);
+      border-radius:0 var(--r-sm) var(--r-sm) 0; padding:9px 12px 9px 14px; }
+    .ev.assistant .body { border-left-color:var(--assistant); }
+    .ev.tool .body { color:var(--accent); opacity:.7; font-size:12px; font-family:ui-monospace,monospace; }
+    .mono { font-family:ui-monospace,monospace; }
+    .tnum { font-variant-numeric:tabular-nums; }
+    body { padding: 0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="bar">
+      <span class="brand"><span class="dot"></span>cc-browse</span>
+      <div class="seg"><span>list</span><span class="on">day</span><span>week</span><span>month</span></div>
+      <div style="display:flex; gap:7px; align-items:center">
+        <span class="chip" style="padding:4px 10px">‹</span>
+        <span style="font-size:14px; font-weight:600">Friday 28 August</span>
+        <span class="chip" style="padding:4px 10px">›</span>
+        <span class="chip">today</span>
+      </div>
+      <span style="margin-left:auto; display:flex; gap:8px; align-items:center">
+        <span class="chip tnum">23 sessions</span><span class="chip tnum">6 projects</span>
+        <span class="chip mono" style="color:var(--accent); border-color:var(--accent-dim)">$31.02</span>
+      </span>
+    </div>
+  </header>
+  <main style="flex-direction:column; padding:14px 26px; overflow:hidden">
+    <div style="display:flex; gap:20px; align-items:center; font-size:12px; color:var(--faint); margin-bottom:10px">
+      <span>grouped by project — sessions stack inside a project only where they overlap</span>
+      <span style="margin-left:auto; display:flex; gap:13px; align-items:center">
+        <span style="display:flex; gap:5px; align-items:center"><i style="display:block; width:8px; height:8px; border-radius:2px; background:#e0a45f"></i>ccChat-general</span>
+        <span style="display:flex; gap:5px; align-items:center"><i style="display:block; width:8px; height:8px; border-radius:2px; background:#82b8ea"></i>micro1-hackathon</span>
+        <span style="display:flex; gap:5px; align-items:center"><i style="display:block; width:8px; height:8px; border-radius:2px; background:#9fd4a4"></i>scan-to-digital</span>
+        <span style="display:flex; gap:5px; align-items:center"><i style="display:block; width:8px; height:8px; border-radius:2px; background:#b79ae0"></i>najdizaskok-fe</span>
+        <span style="display:flex; gap:5px; align-items:center"><i style="display:block; width:8px; height:8px; border-radius:2px; background:#6d6884"></i>scratch</span>
+      </span>
+    </div>
+    <svg viewBox="0 0 1180 600" style="width:100%; height:auto; font-family:ui-sans-serif,-apple-system,'Segoe UI',sans-serif">
+      <defs>
+        <pattern id="dayHatch" width="7" height="7" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+          <rect width="7" height="7" fill="#201e2a"></rect>
+          <line x1="0" y1="0" x2="0" y2="7" stroke="#8a6435" stroke-width="2.5"></line>
+        </pattern>
+      </defs>
+
+      <text x="250" y="34" text-anchor="end" fill="#ece9f5" font-size="13" font-weight="600">you</text>
+      <text x="250" y="50" text-anchor="end" fill="#6d6884" font-size="11">where your attention was</text>
+      <g>
+        <rect x="273" y="22" width="75" height="22" rx="4" fill="#e0a45f" fill-opacity="0.9"></rect>
+        <rect x="310" y="22" width="14" height="22" rx="3" fill="#9fd4a4" fill-opacity="0.9"></rect>
+        <rect x="378" y="22" width="10" height="22" rx="3" fill="#b79ae0" fill-opacity="0.9"></rect>
+        <rect x="509" y="22" width="26" height="22" rx="4" fill="#e0a45f" fill-opacity="0.9"></rect>
+        <rect x="612" y="22" width="9" height="22" rx="3" fill="#9fd4a4" fill-opacity="0.9"></rect>
+        <rect x="863" y="22" width="30" height="22" rx="4" fill="#e0a45f" fill-opacity="0.9"></rect>
+        <rect x="893" y="22" width="34" height="22" rx="4" fill="#82b8ea" fill-opacity="0.9"></rect>
+        <rect x="938" y="22" width="26" height="22" rx="4" fill="#82b8ea" fill-opacity="0.9"></rect>
+        <rect x="975" y="22" width="38" height="22" rx="4" fill="#82b8ea" fill-opacity="0.9"></rect>
+        <rect x="1038" y="22" width="30" height="22" rx="4" fill="#82b8ea" fill-opacity="0.9"></rect>
+        <rect x="1067" y="22" width="8" height="22" rx="3" fill="#e0a45f" fill-opacity="0.9"></rect>
+        <rect x="1100" y="22" width="44" height="22" rx="4" fill="#82b8ea" fill-opacity="0.9"></rect>
+      </g>
+
+      <g stroke="#24222e" stroke-width="1">
+        <line x1="260" y1="56" x2="1160" y2="56"></line>
+        <line x1="277" y1="70" x2="277" y2="330"></line>
+        <line x1="408" y1="70" x2="408" y2="330"></line>
+        <line x1="539" y1="70" x2="539" y2="330"></line>
+        <line x1="670" y1="70" x2="670" y2="330"></line>
+        <line x1="801" y1="70" x2="801" y2="330"></line>
+        <line x1="932" y1="70" x2="932" y2="330"></line>
+        <line x1="1063" y1="70" x2="1063" y2="330"></line>
+      </g>
+      <g fill="#6d6884" font-size="11" font-variant-numeric="tabular-nums">
+        <text x="277" y="70" text-anchor="middle">08:00</text>
+        <text x="408" y="70" text-anchor="middle">10:00</text>
+        <text x="539" y="70" text-anchor="middle">12:00</text>
+        <text x="670" y="70" text-anchor="middle">14:00</text>
+        <text x="801" y="70" text-anchor="middle">16:00</text>
+        <text x="932" y="70" text-anchor="middle">18:00</text>
+        <text x="1063" y="70" text-anchor="middle">20:00</text>
+      </g>
+
+      <g>
+        <text x="250" y="106" text-anchor="end" fill="#ece9f5" font-size="13" font-weight="600">ccChat-general</text>
+        <text x="250" y="122" text-anchor="end" fill="#6d6884" font-size="11">11 sessions · $12.90</text>
+        <g fill="#e0a45f" fill-opacity="0.3" stroke="#e0a45f" stroke-opacity="0.5">
+          <rect x="273" y="84" width="33" height="12" rx="3"></rect>
+          <rect x="324" y="84" width="4" height="12" rx="2"></rect>
+          <rect x="364" y="84" width="788" height="12" rx="3"></rect>
+          <rect x="290" y="100" width="29" height="12" rx="3"></rect>
+          <rect x="509" y="100" width="26" height="12" rx="3"></rect>
+          <rect x="863" y="100" width="62" height="12" rx="3"></rect>
+          <rect x="1067" y="100" width="5" height="12" rx="2"></rect>
+          <rect x="297" y="116" width="51" height="12" rx="3"></rect>
+          <rect x="875" y="116" width="42" height="12" rx="3"></rect>
+          <rect x="898" y="132" width="24" height="12" rx="3"></rect>
+        </g>
+        <rect x="286" y="85" width="2" height="10" fill="#e0a45f"></rect>
+        <rect x="400" y="85" width="100" height="10" fill="url(#dayHatch)"></rect>
+        <rect x="560" y="85" width="290" height="10" fill="url(#dayHatch)"></rect>
+        <rect x="1080" y="85" width="70" height="10" fill="url(#dayHatch)"></rect>
+      </g>
+
+      <g>
+        <text x="250" y="176" text-anchor="end" fill="#ece9f5" font-size="13" font-weight="600">micro1-hackathon</text>
+        <text x="250" y="192" text-anchor="end" fill="#6d6884" font-size="11">6 sessions · $11.40</text>
+        <g fill="#82b8ea" fill-opacity="0.3" stroke="#82b8ea" stroke-opacity="0.5">
+          <rect x="875" y="164" width="8" height="12" rx="3"></rect>
+          <rect x="941" y="164" width="20" height="12" rx="3"></rect>
+          <rect x="975" y="164" width="35" height="12" rx="3"></rect>
+          <rect x="1011" y="164" width="25" height="12" rx="3"></rect>
+          <rect x="1039" y="164" width="105" height="12" rx="3"></rect>
+          <rect x="941" y="180" width="18" height="12" rx="3"></rect>
+        </g>
+        <rect x="1050" y="165" width="26" height="10" fill="url(#dayHatch)"></rect>
+      </g>
+
+      <g>
+        <text x="250" y="224" text-anchor="end" fill="#9c97b0" font-size="13">scan-to-digital</text>
+        <text x="250" y="240" text-anchor="end" fill="#6d6884" font-size="11">2 sessions · $5.30</text>
+        <g fill="#9fd4a4" fill-opacity="0.3" stroke="#9fd4a4" stroke-opacity="0.5">
+          <rect x="310" y="212" width="454" height="12" rx="3"></rect>
+          <rect x="615" y="228" width="4" height="12" rx="2"></rect>
+        </g>
+        <rect x="340" y="213" width="260" height="10" fill="url(#dayHatch)"></rect>
+        <rect x="640" y="213" width="120" height="10" fill="url(#dayHatch)"></rect>
+      </g>
+
+      <g>
+        <text x="250" y="268" text-anchor="end" fill="#9c97b0" font-size="13">najdizaskok-fe</text>
+        <text x="250" y="284" text-anchor="end" fill="#6d6884" font-size="11">2 sessions · $0.90</text>
+        <g fill="#b79ae0" fill-opacity="0.3" stroke="#b79ae0" stroke-opacity="0.5">
+          <rect x="316" y="260" width="3" height="12" rx="1.5"></rect>
+          <rect x="382" y="260" width="4" height="12" rx="2"></rect>
+        </g>
+      </g>
+
+      <g>
+        <text x="250" y="306" text-anchor="end" fill="#6d6884" font-size="13">scratch</text>
+        <text x="250" y="322" text-anchor="end" fill="#6d6884" font-size="11">2 sessions, seconds each</text>
+        <g fill="#6d6884" fill-opacity="0.3" stroke="#6d6884" stroke-opacity="0.5">
+          <rect x="322" y="298" width="3" height="12" rx="1.5"></rect>
+          <rect x="410" y="298" width="3" height="12" rx="1.5"></rect>
+        </g>
+      </g>
+
+      <line x1="260" y1="360" x2="1160" y2="360" stroke="#2e2b3a"></line>
+      <g>
+        <text x="260" y="388" fill="#6d6884" font-size="11" letter-spacing="1.2">AGENTS WORKING</text>
+        <text x="260" y="418" fill="#ece9f5" font-size="22" font-weight="600">6 h 12 m</text>
+        <text x="260" y="440" fill="#9c97b0" font-size="12">across a 13-hour day</text>
+      </g>
+      <g>
+        <text x="560" y="388" fill="#6d6884" font-size="11" letter-spacing="1.2">BLOCKED ON YOU</text>
+        <text x="560" y="418" fill="#e0a45f" font-size="22" font-weight="600">2 h 34 m</text>
+        <text x="560" y="440" fill="#9c97b0" font-size="12">longest single stop 51 m, in scan-to-digital</text>
+      </g>
+      <g>
+        <text x="900" y="388" fill="#6d6884" font-size="11" letter-spacing="1.2">NOTHING RUNNING</text>
+        <text x="900" y="418" fill="#9c97b0" font-size="22" font-weight="600">2 h 05 m</text>
+        <text x="900" y="440" fill="#9c97b0" font-size="12">one gap, 13:15 to 16:58</text>
+      </g>
+      <text x="260" y="478" fill="#9c97b0" font-size="12">Your attention crossed between projects nine times. The two longest hatched stretches are both sessions that stopped while you were in a different colour.</text>
+    </svg>
+  </main>
+</div>
+</body>
+</html>

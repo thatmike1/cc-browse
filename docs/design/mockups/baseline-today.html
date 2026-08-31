@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cc-browse mockup — baseline today</title>
+<style>
+    :root {
+      --bg:#131218; --panel:#191821; --raised:#201e2a; --hover:#262433;
+      --line:#2e2b3a; --line-soft:#24222e; --text:#ece9f5; --dim:#9c97b0;
+      --faint:#6d6884; --accent:#e0a45f; --accent-dim:#8a6435;
+      --user:#82b8ea; --assistant:#9fd4a4; --agent:#b79ae0; --mark:#f0c987;
+      --r-sm:7px; --r:10px; --r-lg:14px;
+      --shadow:0 12px 36px -8px rgba(0,0,0,.75);
+    }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body {
+      background:var(--bg); color:var(--text);
+      font:14px/1.55 ui-sans-serif,-apple-system,"Segoe UI",sans-serif;
+      -webkit-font-smoothing:antialiased;
+    }
+    a { color:var(--accent); } a:hover { color:var(--mark); }
+    .app { display:flex; flex-direction:column; height:800px; overflow:hidden; }
+    header { flex:none; background:var(--panel); border-bottom:1px solid var(--line); }
+    .bar { display:flex; gap:9px; align-items:center; padding:11px 15px; }
+    .brand { font-size:12px; font-weight:700; letter-spacing:.13em; text-transform:uppercase;
+      color:var(--accent); display:flex; align-items:center; gap:7px; }
+    .brand .dot { width:7px; height:7px; border-radius:50%; background:var(--accent);
+      box-shadow:0 0 0 3px rgba(224,164,95,.16); }
+    .search { flex:1; min-width:190px; display:flex; align-items:center; gap:9px;
+      background:var(--bg); border:1px solid var(--line); border-radius:var(--r);
+      padding:0 11px; height:36px; color:var(--faint); }
+    .kbd { font:600 11px/1 ui-monospace,monospace; color:var(--faint);
+      border:1px solid var(--line); border-radius:5px; padding:3px 5px; background:var(--panel); }
+    .seg { display:flex; background:var(--bg); border:1px solid var(--line);
+      border-radius:var(--r); padding:2px; gap:2px; height:36px; align-items:center; }
+    .seg span { display:flex; align-items:center; padding:0 11px; height:28px;
+      border-radius:var(--r-sm); font-size:12px; color:var(--dim); white-space:nowrap; }
+    .seg span.on { background:var(--raised); color:var(--accent); }
+    .trigger { display:flex; align-items:center; gap:7px; height:36px; padding:0 11px;
+      background:var(--bg); border:1px solid var(--line); border-radius:var(--r);
+      color:var(--dim); font-size:12px; }
+    .trigger.set { color:var(--accent); border-color:var(--accent-dim); }
+    .stats { padding:0 15px 9px; font-size:12px; color:var(--faint);
+      display:flex; gap:7px; align-items:center; }
+    .stats b { color:var(--dim); font-weight:600; font-variant-numeric:tabular-nums; }
+    .stats .sep { opacity:.4; }
+    .pill { display:inline-flex; align-items:center; gap:6px; background:var(--raised);
+      border:1px solid var(--line); border-radius:999px; padding:2px 9px; color:var(--dim); }
+    main { flex:1; display:flex; min-height:0; }
+    .daygroup { padding:12px 8px 7px; font-size:11px; font-weight:700; letter-spacing:.1em;
+      text-transform:uppercase; color:var(--faint); }
+    .row { padding:11px 12px; border-radius:var(--r); border:1px solid transparent; position:relative; }
+    .row.cursor { background:var(--panel); border-color:var(--line-soft); }
+    .row.active { background:var(--raised); border-color:var(--line); }
+    .row.active::before { content:''; position:absolute; left:0; top:12px; bottom:12px;
+      width:2px; border-radius:2px; background:var(--accent); }
+    .row .title { font-size:16px; font-weight:600; letter-spacing:-.011em; line-height:1.35; margin-bottom:5px; }
+    .row .meta { display:flex; gap:7px; align-items:center; font-size:12px; color:var(--faint); margin-bottom:5px; }
+    .row .meta .proj { color:var(--dim); font-weight:500; }
+    .row .meta .sep { opacity:.45; }
+    .row .snip { font-size:12px; color:var(--faint); line-height:1.45; }
+    .row .snip b { color:var(--dim); font-weight:600; }
+    .chip { display:inline-flex; align-items:center; gap:6px; padding:4px 9px;
+      border-radius:var(--r-sm); background:var(--raised); border:1px solid var(--line); color:var(--dim); }
+    .chip.mono { font-family:ui-monospace,monospace; }
+    .tgl { padding:4px 10px; border-radius:var(--r-sm); font-size:12px; color:var(--faint);
+      border:1px solid var(--line); background:var(--raised); }
+    .tgl.on { color:var(--accent); border-color:var(--accent-dim); }
+    mark { background:rgba(224,164,95,.2); color:var(--mark); border-radius:3px; padding:0 2px; }
+    .ev { margin-bottom:15px; }
+    .ev .who { font-size:11px; text-transform:uppercase; letter-spacing:.08em;
+      font-weight:600; margin-bottom:5px; color:var(--faint); }
+    .ev.user .who { color:var(--user); }
+    .ev.assistant .who { color:var(--assistant); }
+    .ev .body { border-left:2px solid var(--line); padding-left:14px; }
+    .ev.user .body { border-left-color:var(--user); background:rgba(130,184,234,.045);
+      border-radius:0 var(--r-sm) var(--r-sm) 0; padding:9px 12px 9px 14px; }
+    .ev.assistant .body { border-left-color:var(--assistant); }
+    .ev.tool .body { color:var(--accent); opacity:.7; font-size:12px; font-family:ui-monospace,monospace; }
+    .mono { font-family:ui-monospace,monospace; }
+    .tnum { font-variant-numeric:tabular-nums; }
+    body { padding: 0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="bar">
+      <span class="brand"><span class="dot"></span>cc-browse</span>
+      <div class="seg"><span class="on">list</span><span>day</span><span>week</span><span>month</span><span>live</span></div>
+      <div class="search">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+        <span style="flex:1">search titles or paste a session id…</span>
+        <span class="kbd">/</span>
+      </div>
+      <div class="seg"><span class="on">titles</span><span>full text</span><span>meaning</span></div>
+      <div class="trigger set">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path></svg>
+        <span>cc-browse</span>
+      </div>
+      <div class="trigger"><span>all branches</span></div>
+      <div class="trigger"><span>newest</span></div>
+      <div class="seg"><span class="on">all</span><span>7d</span><span>30d</span></div>
+    </div>
+    <div class="stats">
+      <b>2,476</b><span>sessions</span><span class="sep">·</span><b>184,902</b><span>messages</span>
+      <span class="pill">cc-browse <span style="color:var(--faint)">×</span></span>
+      <span style="margin-left:auto" class="tnum">$412.80 total</span>
+    </div>
+  </header>
+  <main>
+    <div style="width:512px; border-right:1px solid var(--line); padding:6px 8px; overflow:hidden">
+      <div class="daygroup">Today · Friday 28 August</div>
+      <div class="row active">
+        <div class="title">Lanes view: bar should dissolve while an agent is still running</div>
+        <div class="meta"><span class="proj">cc-browse</span><span class="sep">·</span><span>main</span><span class="sep">·</span><span class="tnum">214 msg</span><span style="margin-left:auto" class="tnum">$3.41</span></div>
+        <div class="snip"><b>assistant:</b> the right edge now fades instead of stopping, and the block re-polls while anything is live…</div>
+      </div>
+      <div class="row cursor">
+        <div class="title">Index every subagent transcript under the session that spawned it</div>
+        <div class="meta"><span class="proj">cc-browse</span><span class="sep">·</span><span>main</span><span class="sep">·</span><span class="tnum">96 msg</span><span style="margin-left:auto" class="tnum">$1.02</span></div>
+        <div class="snip"><b>user:</b> a hit inside a subagent should be reported against the parent, flagged via subagent…</div>
+      </div>
+      <div class="row">
+        <div class="title">Money map generated from bilingual data, night mode, drawer</div>
+        <div class="meta"><span class="proj">ccChat-general</span><span class="sep">·</span><span>main</span><span class="sep">·</span><span class="tnum">431 msg</span><span style="margin-left:auto" class="tnum">$8.90</span></div>
+        <div class="snip"><b>assistant:</b> the overview bars now show scale, counts and their own key…</div>
+      </div>
+      <div class="daygroup">Yesterday · Thursday 27 August</div>
+      <div class="row">
+        <div class="title">Pixel Patrol demo chain, Xvfb video rig take 4</div>
+        <div class="meta"><span class="proj">pixel-patrol</span><span class="sep">·</span><span>main</span><span class="sep">·</span><span class="tnum">612 msg</span><span style="margin-left:auto" class="tnum">$12.44</span></div>
+        <div class="snip"><b>user:</b> record it again but hold the drift panel for three seconds longer…</div>
+      </div>
+      <div class="row">
+        <div class="title" style="color:var(--dim); font-weight:400">quick question about the potion-base-8M dims</div>
+        <div class="meta"><span class="proj">cc-browse</span><span class="sep">·</span><span class="tnum">8 msg</span><span style="margin-left:auto" class="tnum">$0.04</span></div>
+        <div class="snip"><b>assistant:</b> 256 dimensions, float32, L2-normalised — roughly 1 KB per message…</div>
+      </div>
+    </div>
+    <div style="flex:1; display:flex; flex-direction:column; min-width:0">
+      <div style="flex:none; padding:14px 22px 12px; border-bottom:1px solid var(--line); background:var(--panel)">
+        <div style="font-size:20px; font-weight:600; letter-spacing:-.015em; line-height:1.25; margin-bottom:9px">Lanes view: bar should dissolve while an agent is still running</div>
+        <div style="display:flex; gap:8px; align-items:center; font-size:12px; color:var(--faint)">
+          <span class="chip">cc-browse</span><span class="chip">main</span><span class="chip tnum">214 msg</span>
+          <span class="chip mono" style="color:var(--accent); border-color:var(--accent-dim)">$3.41</span>
+          <span class="chip mono">claude --resume 8f2c…</span>
+          <span style="margin-left:auto; display:flex; gap:6px">
+            <span class="tgl on">reader</span><span class="tgl">thinking</span><span class="tgl">tools</span><span class="tgl">results</span>
+          </span>
+        </div>
+      </div>
+      <div style="flex:1; padding:22px 26px; overflow:hidden">
+        <div style="max-width:860px; margin:0 auto">
+          <div style="display:flex; align-items:center; gap:10px; margin:0 0 14px; font-size:11px; letter-spacing:.09em; text-transform:uppercase; color:var(--faint)">14:02<span style="flex:1; height:1px; background:var(--line-soft)"></span></div>
+          <div class="ev user"><div class="who">user</div><div class="body">a running agent has no end yet — the bar shouldn't just stop, it should read as unfinished</div></div>
+          <div class="ev assistant"><div class="who">assistant</div><div class="body">Right. A hard right edge reads as "this finished at 14:07", which is a lie for anything still writing. I dropped the border on the right side, squared those corners, and let the fill run out into a gradient over the last quarter of the bar.</div></div>
+          <div class="ev tool"><div class="who">tool · Edit</div><div class="body">ui.html — .lane-bar.live { border-right: 0; background: linear-gradient(…) }</div></div>
+          <div class="ev assistant"><div class="who">assistant</div><div class="body">A pulsing dot sits past the fade so a lane that is only a few pixels wide still shows it is alive. The block re-polls every few seconds while anything is running.</div></div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cc-browse mockup — critical path</title>
+<style>
+    :root {
+      --bg:#131218; --panel:#191821; --raised:#201e2a; --hover:#262433;
+      --line:#2e2b3a; --line-soft:#24222e; --text:#ece9f5; --dim:#9c97b0;
+      --faint:#6d6884; --accent:#e0a45f; --accent-dim:#8a6435;
+      --user:#82b8ea; --assistant:#9fd4a4; --agent:#b79ae0; --mark:#f0c987;
+      --r-sm:7px; --r:10px; --r-lg:14px;
+      --shadow:0 12px 36px -8px rgba(0,0,0,.75);
+    }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body {
+      background:var(--bg); color:var(--text);
+      font:14px/1.55 ui-sans-serif,-apple-system,"Segoe UI",sans-serif;
+      -webkit-font-smoothing:antialiased;
+    }
+    a { color:var(--accent); } a:hover { color:var(--mark); }
+    .app { display:flex; flex-direction:column; height:800px; overflow:hidden; }
+    header { flex:none; background:var(--panel); border-bottom:1px solid var(--line); }
+    .bar { display:flex; gap:9px; align-items:center; padding:11px 15px; }
+    .brand { font-size:12px; font-weight:700; letter-spacing:.13em; text-transform:uppercase;
+      color:var(--accent); display:flex; align-items:center; gap:7px; }
+    .brand .dot { width:7px; height:7px; border-radius:50%; background:var(--accent);
+      box-shadow:0 0 0 3px rgba(224,164,95,.16); }
+    .search { flex:1; min-width:190px; display:flex; align-items:center; gap:9px;
+      background:var(--bg); border:1px solid var(--line); border-radius:var(--r);
+      padding:0 11px; height:36px; color:var(--faint); }
+    .kbd { font:600 11px/1 ui-monospace,monospace; color:var(--faint);
+      border:1px solid var(--line); border-radius:5px; padding:3px 5px; background:var(--panel); }
+    .seg { display:flex; background:var(--bg); border:1px solid var(--line);
+      border-radius:var(--r); padding:2px; gap:2px; height:36px; align-items:center; }
+    .seg span { display:flex; align-items:center; padding:0 11px; height:28px;
+      border-radius:var(--r-sm); font-size:12px; color:var(--dim); white-space:nowrap; }
+    .seg span.on { background:var(--raised); color:var(--accent); }
+    .trigger { display:flex; align-items:center; gap:7px; height:36px; padding:0 11px;
+      background:var(--bg); border:1px solid var(--line); border-radius:var(--r);
+      color:var(--dim); font-size:12px; }
+    .trigger.set { color:var(--accent); border-color:var(--accent-dim); }
+    .stats { padding:0 15px 9px; font-size:12px; color:var(--faint);
+      display:flex; gap:7px; align-items:center; }
+    .stats b { color:var(--dim); font-weight:600; font-variant-numeric:tabular-nums; }
+    .stats .sep { opacity:.4; }
+    .pill { display:inline-flex; align-items:center; gap:6px; background:var(--raised);
+      border:1px solid var(--line); border-radius:999px; padding:2px 9px; color:var(--dim); }
+    main { flex:1; display:flex; min-height:0; }
+    .daygroup { padding:12px 8px 7px; font-size:11px; font-weight:700; letter-spacing:.1em;
+      text-transform:uppercase; color:var(--faint); }
+    .row { padding:11px 12px; border-radius:var(--r); border:1px solid transparent; position:relative; }
+    .row.cursor { background:var(--panel); border-color:var(--line-soft); }
+    .row.active { background:var(--raised); border-color:var(--line); }
+    .row.active::before { content:''; position:absolute; left:0; top:12px; bottom:12px;
+      width:2px; border-radius:2px; background:var(--accent); }
+    .row .title { font-size:16px; font-weight:600; letter-spacing:-.011em; line-height:1.35; margin-bottom:5px; }
+    .row .meta { display:flex; gap:7px; align-items:center; font-size:12px; color:var(--faint); margin-bottom:5px; }
+    .row .meta .proj { color:var(--dim); font-weight:500; }
+    .row .meta .sep { opacity:.45; }
+    .row .snip { font-size:12px; color:var(--faint); line-height:1.45; }
+    .row .snip b { color:var(--dim); font-weight:600; }
+    .chip { display:inline-flex; align-items:center; gap:6px; padding:4px 9px;
+      border-radius:var(--r-sm); background:var(--raised); border:1px solid var(--line); color:var(--dim); }
+    .chip.mono { font-family:ui-monospace,monospace; }
+    .tgl { padding:4px 10px; border-radius:var(--r-sm); font-size:12px; color:var(--faint);
+      border:1px solid var(--line); background:var(--raised); }
+    .tgl.on { color:var(--accent); border-color:var(--accent-dim); }
+    mark { background:rgba(224,164,95,.2); color:var(--mark); border-radius:3px; padding:0 2px; }
+    .ev { margin-bottom:15px; }
+    .ev .who { font-size:11px; text-transform:uppercase; letter-spacing:.08em;
+      font-weight:600; margin-bottom:5px; color:var(--faint); }
+    .ev.user .who { color:var(--user); }
+    .ev.assistant .who { color:var(--assistant); }
+    .ev .body { border-left:2px solid var(--line); padding-left:14px; }
+    .ev.user .body { border-left-color:var(--user); background:rgba(130,184,234,.045);
+      border-radius:0 var(--r-sm) var(--r-sm) 0; padding:9px 12px 9px 14px; }
+    .ev.assistant .body { border-left-color:var(--assistant); }
+    .ev.tool .body { color:var(--accent); opacity:.7; font-size:12px; font-family:ui-monospace,monospace; }
+    .mono { font-family:ui-monospace,monospace; }
+    .tnum { font-variant-numeric:tabular-nums; }
+    body { padding: 0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="bar">
+      <span style="display:flex; align-items:center; gap:8px; font-size:12px; color:var(--faint)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 5l-7 7 7 7"></path></svg>back</span>
+      <span style="font-size:15px; font-weight:600">Pixel Patrol demo chain, Xvfb video rig take 4</span>
+      <div class="seg"><span>transcript</span><span>lanes</span><span class="on">critical path</span></div>
+      <span style="margin-left:auto; display:flex; gap:8px; align-items:center">
+        <span class="chip tnum">7 agents</span><span class="chip tnum">1 h 12 m wall</span>
+        <span class="chip mono" style="color:var(--accent); border-color:var(--accent-dim)">$12.44</span>
+      </span>
+    </div>
+  </header>
+  <main style="flex-direction:column; padding:16px 26px; overflow:hidden">
+    <div style="display:flex; gap:20px; align-items:center; font-size:12px; color:var(--faint); margin-bottom:10px">
+      <span>bar height is spend · solid line is the chain that set the wall clock · hatched is time the run spent waiting on you</span>
+      <span style="margin-left:auto; display:flex; gap:12px; align-items:center">
+        <span style="display:flex; gap:5px; align-items:center"><i style="display:block; width:8px; height:8px; border-radius:2px; background:var(--accent)"></i>opus</span>
+        <span style="display:flex; gap:5px; align-items:center"><i style="display:block; width:8px; height:8px; border-radius:2px; background:var(--assistant)"></i>sonnet</span>
+        <span style="display:flex; gap:5px; align-items:center"><i style="display:block; width:8px; height:8px; border-radius:2px; background:var(--agent)"></i>haiku</span>
+      </span>
+    </div>
+    <svg viewBox="0 0 1180 520" style="width:100%; height:auto; font-family:ui-sans-serif,-apple-system,'Segoe UI',sans-serif">
+      <defs>
+        <pattern id="waitHatch" width="7" height="7" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+          <rect width="7" height="7" fill="#201e2a"></rect>
+          <line x1="0" y1="0" x2="0" y2="7" stroke="#8a6435" stroke-width="2.5"></line>
+        </pattern>
+      </defs>
+      <g fill="#6d6884" font-size="12" font-variant-numeric="tabular-nums">
+        <text x="260" y="14">15:10</text>
+        <text x="485" y="14">15:28</text>
+        <text x="710" y="14">15:46</text>
+        <text x="935" y="14">16:04</text>
+        <text x="1160" y="14" text-anchor="end">16:22</text>
+      </g>
+      <g stroke="#24222e" stroke-width="1">
+        <line x1="260" y1="22" x2="1160" y2="22"></line>
+        <line x1="485" y1="22" x2="485" y2="450"></line>
+        <line x1="710" y1="22" x2="710" y2="450"></line>
+        <line x1="935" y1="22" x2="935" y2="450"></line>
+      </g>
+
+      <g fill="none" stroke="#2e2b3a" stroke-width="1.5" stroke-dasharray="3 4">
+        <path d="M310,73 C310,100 310,105 320,126"></path>
+        <path d="M435,126 C450,105 450,100 452,73"></path>
+        <path d="M472,73 C472,220 466,240 478,267"></path>
+        <path d="M735,267 C750,240 760,150 770,73"></path>
+      </g>
+      <g fill="none" stroke="#e0a45f" stroke-width="2.2" opacity="0.85">
+        <path d="M447,73 C447,140 447,160 453,196"></path>
+        <path d="M785,196 C800,240 800,300 816,336"></path>
+        <path d="M972,336 C990,380 990,390 903,406"></path>
+      </g>
+
+      <g>
+        <rect x="260" y="47" width="900" height="26" rx="6" fill="#e0a45f" fill-opacity="0.3" stroke="#e0a45f" stroke-opacity="0.55"></rect>
+        <rect x="485" y="48" width="100" height="24" fill="url(#waitHatch)" opacity="0.9"></rect>
+        <rect x="847" y="48" width="63" height="24" fill="url(#waitHatch)" opacity="0.9"></rect>
+        <text x="250" y="58" text-anchor="end" fill="#ece9f5" font-size="13" font-weight="600">lead session</text>
+        <text x="250" y="74" text-anchor="end" fill="#6d6884" font-size="11">opus · $5.10</text>
+        <text x="1170" y="66" fill="#6d6884" font-size="11" text-anchor="end" opacity="0"> </text>
+      </g>
+      <g>
+        <rect x="310" y="122" width="125" height="8" rx="4" fill="#9fd4a4" fill-opacity="0.3" stroke="#9fd4a4" stroke-opacity="0.55"></rect>
+        <text x="250" y="120" text-anchor="end" fill="#9c97b0" font-size="13">Explore · find the rig entry point</text>
+        <text x="250" y="136" text-anchor="end" fill="#6d6884" font-size="11">sonnet · $0.31</text>
+      </g>
+      <g>
+        <rect x="447" y="186" width="338" height="20" rx="6" fill="#e0a45f" fill-opacity="0.3" stroke="#e0a45f" stroke-opacity="0.75" stroke-width="1.5"></rect>
+        <text x="250" y="190" text-anchor="end" fill="#ece9f5" font-size="13" font-weight="600">orchestra-worker · Xvfb harness</text>
+        <text x="250" y="206" text-anchor="end" fill="#6d6884" font-size="11">opus · $3.22</text>
+      </g>
+      <g>
+        <rect x="472" y="264" width="263" height="6" rx="3" fill="#b79ae0" fill-opacity="0.3" stroke="#b79ae0" stroke-opacity="0.55"></rect>
+        <text x="250" y="262" text-anchor="end" fill="#9c97b0" font-size="13">grunt · trim 340 frames</text>
+        <text x="250" y="278" text-anchor="end" fill="#6d6884" font-size="11">haiku · $0.08</text>
+      </g>
+      <g>
+        <rect x="810" y="330" width="162" height="12" rx="5" fill="#9fd4a4" fill-opacity="0.3" stroke="#9fd4a4" stroke-opacity="0.75" stroke-width="1.5"></rect>
+        <text x="250" y="330" text-anchor="end" fill="#ece9f5" font-size="13" font-weight="600">orchestra-verifier · demo chain</text>
+        <text x="250" y="346" text-anchor="end" fill="#6d6884" font-size="11">sonnet · $0.94</text>
+      </g>
+      <g>
+        <path d="M897,397 L1160,397 L1160,415 L897,415 Z" fill="#e0a45f" fill-opacity="0.22"></path>
+        <path d="M1160,397 L897,397 L897,415 L1160,415" fill="none" stroke="#e0a45f" stroke-opacity="0.75" stroke-width="1.5"></path>
+        <circle cx="1160" cy="406" r="5" fill="#e0a45f"></circle>
+        <text x="250" y="400" text-anchor="end" fill="#ece9f5" font-size="13" font-weight="600">orchestra-worker · narration cut</text>
+        <text x="250" y="416" text-anchor="end" fill="#6d6884" font-size="11">opus · $2.79 · still running</text>
+      </g>
+
+      <g>
+        <rect x="260" y="466" width="900" height="1" fill="#2e2b3a"></rect>
+        <text x="260" y="494" fill="#e0a45f" font-size="13" font-weight="600">Critical path — 51 min of the 72</text>
+        <text x="260" y="512" fill="#9c97b0" font-size="12">lead → Xvfb harness → verifier → narration cut. Explore and grunt ran beside it and cost nothing in wall clock.</text>
+        <text x="1160" y="494" text-anchor="end" fill="#e0a45f" font-size="13" font-weight="600">Waiting on you — 13 min</text>
+        <text x="1160" y="512" text-anchor="end" fill="#9c97b0" font-size="12">two stops, both on the lead lane</text>
+      </g>
+    </svg>
+  </main>
+</div>
+</body>
+</html>
