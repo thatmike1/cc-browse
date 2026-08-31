@@ -40,8 +40,9 @@ document.addEventListener('keydown', (e) => {
 let t;
 $('#q').addEventListener('input', () => {
   clearTimeout(t);
-  t = setTimeout(() => { state.q = $('#q').value.trim(); ui.cursor = -1; load(true); },
-    state.mode === 'content' ? 260 : 160);
+  // every keystroke runs full text among the other two, so every keystroke gets
+  // the slow mode's debounce
+  t = setTimeout(() => { state.q = $('#q').value.trim(); ui.cursor = -1; load(true); }, 260);
 });
 
 /* ---------------- boot ---------------- */

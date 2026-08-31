@@ -956,48 +956,85 @@ def subagent_parents(con) -> dict[str, str]:
     }
 
 
-def semantic_hits(con, q: str, pool: int = 600) -> dict[str, dict]:
-    """query -> {session_id: {score, snippet, n_hits}} over the whole corpus.
+# below this the nearest neighbour is just noise, not a weak answer
+SEM_FLOOR = 0.15
+
+
+def _vec_owners(con, rows: list, fp: str) -> list:
+    """per vector index, (the session that owns it, whether via a subagent).
+
+    cached with the matrix, for the same reason: the alternative is a SELECT per
+    candidate row, which is what made a *scoped* semantic search walk the
+    database one message at a time to find rows the scope had already excluded.
+    """
+    if _vec_state.get("owners") is not None and _vec_state.get("owner_fp") == fp:
+        return _vec_state["owners"]
+    parents = subagent_parents(con)
+    by_rowid = {
+        r["rowid"]: r["session_id"]
+        for r in con.execute("SELECT rowid, session_id FROM msg_fts")
+    }
+    owners = []
+    for rid in rows:
+        raw = by_rowid.get(rid, "")
+        owners.append((parents.get(raw, raw), 1 if raw in parents else 0))
+    _vec_state.update(owners=owners, owner_fp=fp)
+    return owners
+
+
+def semantic_hits(con, q: str, pool: int = 600, allow=None) -> tuple[dict, set]:
+    """query -> ({session_id: {score, snippet, n_hits}}, every session it hit).
 
     a hit inside a subagent transcript is reported against its parent session,
     flagged `via_subagent`, since the subagent is not a browsable row.
+
+    `allow`, when given, is the set of sessions the caller's scope admits, and it
+    is applied *while* walking the ranked neighbourhood rather than after: a pool
+    filled with sessions the scope excludes is a pool that found nothing. the
+    second return value is the full set of sessions above the noise floor, which
+    is the mode's honest hit count even when only `pool` of them are scored.
     """
     matrix, rows = load_vectors(con)
     if matrix is None:
-        return {}
-    parents = subagent_parents(con)
+        return {}, set()
+    owners = _vec_owners(con, rows, _fingerprint(con))
     qv = np.asarray(get_model().encode([q])[0], dtype=np.float32)
     qv /= max(float(np.linalg.norm(qv)), 1e-9)
     scores = matrix @ qv
-    take = min(pool, scores.shape[0])
-    top = np.argpartition(-scores, take - 1)[:take]
-    top = top[np.argsort(-scores[top])]
+    order = np.argsort(-scores)
 
     out: dict[str, dict] = {}
-    for i in top:
+    every: set = set()
+    best: list = []  # (rowid, session_id) for the rows a snippet is wanted from
+    for i in order:
         score = float(scores[i])
-        if score < 0.15:  # below this the nearest neighbour is just noise
+        if score < SEM_FLOOR:
             break
-        row = con.execute(
-            "SELECT session_id, text FROM msg_fts WHERE rowid = ?", (rows[int(i)],)
-        ).fetchone()
-        if row is None:
+        sid, via = owners[int(i)]
+        if not sid or (allow is not None and sid not in allow):
             continue
-        raw_sid = row["session_id"]
-        sid = parents.get(raw_sid, raw_sid)
-        via = 1 if raw_sid in parents else 0
+        every.add(sid)
         if sid in out:
             out[sid]["n_hits"] += 1
             out[sid]["via_subagent"] |= via
-        else:
-            text = " ".join(row["text"].split())
-            out[sid] = {
-                "score": score,
-                "snip": text[:260] + ("…" if len(text) > 260 else ""),
-                "n_hits": 1,
-                "via_subagent": via,
-            }
-    return out
+        elif len(out) < pool:
+            out[sid] = {"score": score, "snip": "", "n_hits": 1, "via_subagent": via}
+            best.append((rows[int(i)], sid))
+
+    for i in range(0, len(best), 400):
+        part = best[i : i + 400]
+        marks = ",".join("?" * len(part))
+        texts = {
+            r["rowid"]: r["text"]
+            for r in con.execute(
+                f"SELECT rowid, text FROM msg_fts WHERE rowid IN ({marks})",
+                [rid for rid, _ in part],
+            )
+        }
+        for rid, sid in part:
+            text = " ".join((texts.get(rid) or "").split())
+            out[sid]["snip"] = text[:260] + ("…" if len(text) > 260 else "")
+    return out, every
 
 
 def fts_query(q: str) -> str:
@@ -1136,7 +1173,7 @@ def list_sessions(
         )
 
     if q and mode == "semantic":
-        hits = semantic_hits(con, q)
+        hits, _ = semantic_hits(con, q, allow=_scope_ids(con, clause, args))
         if not hits:
             return {"total": 0, "sessions": [], "mode": mode}
         ids = list(hits)
@@ -1205,7 +1242,7 @@ def list_sessions(
             f"    snippet(msg_fts, 0, '\x02', '\x03', '…', 14) AS snip"
             f"  FROM msg_fts WHERE msg_fts MATCH ?),"
             f" mapped AS ({owner}),"
-            f" hits AS ("
+            f" hits AS MATERIALIZED ("
             f"  SELECT session_id, MIN(score) AS score, COUNT(*) AS n_hits,"
             f"    SUM(via) AS n_via, snip"
             f"  FROM mapped GROUP BY session_id)"
@@ -1216,7 +1253,7 @@ def list_sessions(
         count_sql = (
             f"WITH raw AS MATERIALIZED ("
             f"  SELECT DISTINCT session_id AS sid FROM msg_fts WHERE msg_fts MATCH ?),"
-            f" hits AS (SELECT DISTINCT"
+            f" hits AS MATERIALIZED (SELECT DISTINCT"
             f"   CASE WHEN m.kind = 'subagent' THEN m.parent_id ELSE raw.sid END"
             f"   AS session_id FROM raw JOIN sessions m ON m.session_id = raw.sid)"
             f" SELECT COUNT(*) FROM hits h JOIN sessions s ON s.session_id = h.session_id"
@@ -1289,16 +1326,36 @@ def _norm(raw: dict[str, float]) -> dict[str, float]:
     return {k: (v - lo) / (hi - lo) for k, v in raw.items()}
 
 
-def _meta_hits(con, q: str) -> dict[str, dict]:
-    """title/prompt/project/branch substring hits, keyed by session."""
+def _scope_ids(con, clause: str, args: list) -> set:
+    """every listable session the scope admits, as a membership set.
+
+    the semantic mode ranks vectors, not rows, so it cannot be handed a WHERE
+    clause the way the other two can — it gets this instead, and applies it
+    while it walks, so its pool fills with sessions that are actually reachable.
+    """
+    return {
+        r["session_id"]
+        for r in con.execute(f"SELECT s.session_id FROM sessions s WHERE {clause}", args)
+    }
+
+
+def _meta_hits(con, q: str, clause: str, args: list) -> tuple[dict, set]:
+    """title/prompt/project/branch substring hits, keyed by session.
+
+    the scope goes into the query, not after it: a pool of the 150 most recent
+    matches is only useful if all 150 are matches you could have reached.
+    """
     like = f"%{q}%"
+    where = f"{clause} AND (s.title LIKE ? OR s.first_prompt LIKE ? OR s.project LIKE ? OR s.branch LIKE ?)"
+    hit_args = [*args, *([like] * 4)]
+    every = {
+        r["session_id"]
+        for r in con.execute(f"SELECT s.session_id FROM sessions s WHERE {where}", hit_args)
+    }
     rows = con.execute(
-        "SELECT s.session_id, s.title, s.first_prompt FROM sessions s"
-        f" WHERE {' AND '.join(BASE_FILTERS)}"
-        " AND (s.title LIKE ? OR s.first_prompt LIKE ?"
-        " OR s.project LIKE ? OR s.branch LIKE ?)"
+        f"SELECT s.session_id, s.title, s.first_prompt FROM sessions s WHERE {where}"
         " ORDER BY s.modified DESC LIMIT ?",
-        [*([like] * 4), BLEND_POOL["meta"]],
+        [*hit_args, BLEND_POOL["meta"]],
     ).fetchall()
     low = q.lower()
     out: dict[str, dict] = {}
@@ -1313,41 +1370,65 @@ def _meta_hits(con, q: str) -> dict[str, dict]:
         else:
             score = 0.3
         out[r["session_id"]] = {"score": score}
-    return out
+    return out, every
 
 
-def _content_hits(con, q: str) -> dict[str, dict]:
+# a hit's row maps to the session that owns it: a hit inside a subagent
+# transcript counts for the session that spawned it, which is the listable one
+_FTS_OWNER = (
+    "  SELECT CASE WHEN m.kind = 'subagent' THEN m.parent_id ELSE raw.sid END"
+    "    AS session_id,"
+    "    CASE WHEN m.kind = 'subagent' THEN 1 ELSE 0 END AS via,"
+    "    raw.score, raw.snip"
+    "  FROM raw JOIN sessions m ON m.session_id = raw.sid"
+)
+
+
+def _content_hits(con, q: str, clause: str, args: list) -> tuple[dict, set]:
     """full-text hits, keyed by the listable session that owns them.
 
-    the same MATERIALIZED cte the paged content search uses, minus the scope
-    filters and paging — blending applies both afterwards, over every mode at
-    once. bm25 ranks better-is-more-negative, so the raw score is negated here
-    and every mode hands `_norm` a higher-is-better number.
+    the same MATERIALIZED cte the paged content search uses, with the scope
+    joined in *before* the pool limit — filtering afterwards was what made a
+    scoped blend miss most of its own matches. bm25 ranks better-is-more-
+    negative, so the raw score is negated here and every mode hands `_norm` a
+    higher-is-better number.
     """
     match = fts_query(q)
     if not match:
-        return {}
-    owner = (
-        "  SELECT CASE WHEN m.kind = 'subagent' THEN m.parent_id ELSE raw.sid END"
-        "    AS session_id,"
-        "    CASE WHEN m.kind = 'subagent' THEN 1 ELSE 0 END AS via,"
-        "    raw.score, raw.snip"
-        "  FROM raw JOIN sessions m ON m.session_id = raw.sid"
-    )
-    sql = (
+        return {}, set()
+    raw_cte = (
         "WITH raw AS MATERIALIZED ("
         "  SELECT session_id AS sid, bm25(msg_fts) AS score,"
         "    snippet(msg_fts, 0, '\x02', '\x03', '…', 14) AS snip"
         "  FROM msg_fts WHERE msg_fts MATCH ?),"
-        f" mapped AS ({owner})"
-        " SELECT session_id, MIN(score) AS score, COUNT(*) AS n_hits,"
-        "   SUM(via) AS n_via, snip"
-        " FROM mapped GROUP BY session_id ORDER BY score ASC LIMIT ?"
+        f" mapped AS ({_FTS_OWNER}),"
+        # MATERIALIZED again, and for a second reason: left as a co-routine,
+        # sqlite drives the outer join from the scope's index and re-runs the
+        # whole fts scan once per scoped session — 6.8 s where this is 0.25 s
+        " hits AS MATERIALIZED ("
+        "  SELECT session_id, MIN(score) AS score, COUNT(*) AS n_hits,"
+        "    SUM(via) AS n_via, snip"
+        "  FROM mapped GROUP BY session_id)"
+    )
+    sql = (
+        f"{raw_cte} SELECT h.session_id, h.score, h.n_hits, h.n_via, h.snip"
+        f" FROM hits h JOIN sessions s ON s.session_id = h.session_id"
+        f" WHERE {clause} ORDER BY h.score ASC LIMIT ?"
+    )
+    every_sql = (
+        "WITH raw AS MATERIALIZED ("
+        "  SELECT DISTINCT session_id AS sid FROM msg_fts WHERE msg_fts MATCH ?),"
+        " hits AS MATERIALIZED (SELECT DISTINCT"
+        "   CASE WHEN m.kind = 'subagent' THEN m.parent_id ELSE raw.sid END"
+        "   AS session_id FROM raw JOIN sessions m ON m.session_id = raw.sid)"
+        f" SELECT h.session_id FROM hits h JOIN sessions s"
+        f" ON s.session_id = h.session_id WHERE {clause}"
     )
     try:
-        rows = con.execute(sql, [match, BLEND_POOL["content"]]).fetchall()
+        every = {r["session_id"] for r in con.execute(every_sql, [match, *args])}
+        rows = con.execute(sql, [match, *args, BLEND_POOL["content"]]).fetchall()
     except sqlite3.OperationalError:
-        return {}
+        return {}, set()
     return {
         r["session_id"]: {
             "score": -r["score"],
@@ -1356,20 +1437,19 @@ def _content_hits(con, q: str) -> dict[str, dict]:
             "n_via": r["n_via"],
         }
         for r in rows
-    }
+    }, every
 
 
-def _meaning_hits(con, q: str) -> dict[str, dict]:
+def _meaning_hits(con, q: str, allow: set) -> tuple[dict, set]:
     """the top slice of the cosine neighbourhood, in the shape the blend wants."""
-    hits = semantic_hits(con, q)
-    top = sorted(hits.items(), key=lambda kv: -kv[1]["score"])[: BLEND_POOL["semantic"]]
+    hits, every = semantic_hits(con, q, pool=BLEND_POOL["semantic"], allow=allow)
     return {
         sid: {
             "score": h["score"], "snip": h["snip"],
             "n_hits": h["n_hits"], "n_via": h["via_subagent"],
         }
-        for sid, h in top
-    }
+        for sid, h in hits.items()
+    }, every
 
 
 def _rows_for(con, clause: str, args: list, cols: str, ids: list) -> dict:
@@ -1397,18 +1477,24 @@ def blended_search(
 ) -> dict:
     """all three search modes at once, ranked into one list.
 
-    each mode runs over the whole corpus, the scope filters are applied once to
-    the union, and `_norm` puts the survivors on one scale — see it for the
+    every mode carries the scope itself, so its pool holds only sessions the
+    scope admits, and `_norm` puts the survivors on one scale — see it for the
     rule. every row carries the modes that matched it, so the chips can narrow
-    the list without asking again, and each mode's own count and wall time.
+    the list without asking again. each mode also reports its true post-scope
+    hit count, which is what the chip shows: past `BLEND_CAP` the ranked list is
+    truncated, and the response says so rather than shrinking the counts to fit.
     """
+    allow = _scope_ids(con, clause, args)
     per: dict[str, dict[str, dict]] = {}
+    found: dict[str, set] = {}
     ms: dict[str, float] = {}
     for name, fn in (
-        ("meta", _meta_hits), ("content", _content_hits), ("semantic", _meaning_hits),
+        ("meta", lambda: _meta_hits(con, q, clause, args)),
+        ("content", lambda: _content_hits(con, q, clause, args)),
+        ("semantic", lambda: _meaning_hits(con, q, allow)),
     ):
         t0 = time.perf_counter()
-        per[name] = fn(con, q)
+        per[name], found[name] = fn()
         ms[name] = round((time.perf_counter() - t0) * 1000, 1)
 
     ids = list({sid for hits in per.values() for sid in hits})
@@ -1452,18 +1538,21 @@ def blended_search(
         merged.sort(key=cost_key)
     else:
         merged.sort(key=lambda d: -d["score"])
+    matched = len(set().union(*found.values())) if found else 0
     merged = merged[:BLEND_CAP]
 
     ran = {"meta": True, "content": True, "semantic": SEMANTIC_OK and VEC_FILE.exists()}
     return {
-        "total": len(merged),
+        # `total` is every session the query matched inside the scope; `returned`
+        # is how many of them this response ranked. they differ past BLEND_CAP,
+        # and the ui says "top N of M" rather than claiming the whole set.
+        "total": matched,
+        "returned": len(merged),
+        "truncated": len(merged) < matched,
         "sessions": merged[offset:],
         "mode": "blend",
         "modes": {
-            m: {
-                "n": sum(1 for d in merged if m in d["hit_modes"]),
-                "ms": ms[m], "ran": ran[m],
-            }
+            m: {"n": len(found[m]), "ms": ms[m], "ran": ran[m]}
             for m in ("meta", "content", "semantic")
         },
         "ms": round(sum(ms.values()), 1),

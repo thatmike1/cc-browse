@@ -143,7 +143,9 @@ async function pullFacets() {
 /* ---------------- open / close ---------------- */
 
 export function openScope() {
-  if (!el.hidden) return;
+  // the live board is everything that is running, deliberately unfiltered, so
+  // every control in here would be inert over it
+  if (!el.hidden || ui.view === 'live') return;
   el.hidden = false;
   render();
   refreshCount();
@@ -158,6 +160,8 @@ export function closeScope() {
 
 chip.addEventListener('click', () => (el.hidden ? openScope() : closeScope()));
 $('.sc-scrim', el).addEventListener('click', closeScope);
+// leaving for the board takes the panel with you; nothing in it applies there
+$('#live-btn').addEventListener('click', closeScope);
 $('#scope-q').addEventListener('input', () => { renderProjects(); renderBranches(); });
 
 $('#sc-projects').addEventListener('click', (e) => {
@@ -214,7 +218,8 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !el.hidden) {
     closeScope(); e.stopPropagation(); e.preventDefault(); return;
   }
-  if ((e.key === 's' || e.key === 'S') && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
+  if ((e.key === 's' || e.key === 'S') && !typing && ui.view !== 'live'
+      && !e.metaKey && !e.ctrlKey && !e.altKey) {
     e.preventDefault(); e.stopPropagation();
     if (el.hidden) openScope(); else closeScope();
   }

@@ -150,7 +150,11 @@ function renderModes() {
     box.hidden = true; box.innerHTML = ''; meta.textContent = '';
     return;
   }
-  meta.textContent = `${total.toLocaleString()} session${total === 1 ? '' : 's'} · ${Math.round(blend.ms)} ms`;
+  // past the cap the chips still count every match, so the bar has to say that
+  // the list under them is only the top slice rather than the whole answer
+  meta.textContent = blend.truncated
+    ? `top ${blend.returned} of ${total.toLocaleString()} sessions · ${Math.round(blend.ms)} ms`
+    : `${total.toLocaleString()} session${total === 1 ? '' : 's'} · ${Math.round(blend.ms)} ms`;
   const rows = Object.entries(blend.modes)
     .filter(([, m]) => m.ran)
     .sort((a, b) => b[1].n - a[1].n);
