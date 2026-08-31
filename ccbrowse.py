@@ -27,6 +27,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -683,6 +684,8 @@ def selfcheck() -> int:
                 print(f"cost: python and sql agree on {len(rows)} cached rows")
     else:
         print("cost: no cache at hand, fixture only")
+
+    failed = bool(stash_check()) or failed
     return 1 if failed else 0
 
 
@@ -2203,6 +2206,365 @@ def waiting_count() -> dict:
     }
 
 
+# ------------------------------------------------- board: cache, spend, ended
+
+# the prompt-cache and rate-limit figures never reach the jsonl — claude code
+# hands them only to a statusline hook. `~/.claude/statusline-cav.sh` stashes
+# each raw payload here, write-then-rename, so a read gets a whole file or the
+# previous one. the shape is claude code's, not ours: every field is optional,
+# and several real sessions on this machine carry no `prompt_cache` block at all.
+STATUS_STASH = Path.home() / ".cache" / "cc-browse-tray" / "status"
+
+# how far back a spend sparkline looks, and how many bars cut that window up
+SPEND_WINDOW = 600
+HEADER_BARS = 6
+ROW_BARS = 5
+
+# don't record a sample per poll when nothing moved; a flat stretch needs two
+# points, not a hundred and fifty
+SPEND_MIN_GAP = 30
+
+# a session whose process is gone but whose stash was written this recently is
+# "finished while you were away"; past that it is history, and the list owns it
+FINISHED_WINDOW = 3 * 3600
+FINISHED_MAX = 8
+
+# a repo fact is worth one `git status` a minute, not one every poll
+GIT_CACHE_SECS = 60
+
+# the hero quotes the question, so it gets more room than a card's activity line
+QUESTION_CHARS = 320
+
+_TTL = re.compile(r"^\s*(\d+)\s*([smh])\s*$")
+_TTL_UNIT = {"s": 1, "m": 60, "h": 3600}
+
+# running totals per session, sampled by this process and kept nowhere else:
+# the board is a live view, and a spend delta has no value once it is history
+_spend_lock = threading.Lock()
+_spend_seen: dict[str, list[tuple[float, float]]] = {}
+
+_git_lock = threading.Lock()
+_git_seen: dict[str, tuple[float, int | None]] = {}
+
+
+def _sub(d: dict, key: str) -> dict:
+    """one nested object out of a stash payload, or `{}` if it is not there."""
+    v = d.get(key) if isinstance(d, dict) else None
+    return v if isinstance(v, dict) else {}
+
+
+def _num(v) -> float | None:
+    """a number, or `None` for anything else — `True` is not a number here."""
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def stash_read(session_id: str) -> dict:
+    """one session's statusline payload, or `{}` when there is nothing to read."""
+    try:
+        d = json.loads(
+            (STATUS_STASH / f"{session_id}.json").read_text(
+                encoding="utf-8", errors="replace"
+            )
+        )
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def ttl_seconds(ttl) -> int | None:
+    """`"1h"` → 3600. the ttl is a claude code string and may be a shape we
+    have never seen, in which case the countdown runs without a full scale."""
+    m = _TTL.match(str(ttl or ""))
+    return int(m.group(1)) * _TTL_UNIT[m.group(2)] if m else None
+
+
+def cache_state(stash: dict, now: float) -> dict:
+    """the prompt-cache countdown for one session.
+
+    `state` is the honest three-way: `warm` while the cache still has time on
+    it, `cold` once it has run out, and `unknown` when the payload carried no
+    `prompt_cache` block — which happens for real sessions here, so it is a case
+    the board renders rather than an error. `pct` is `None` when the ttl string
+    did not parse: a bar with no scale is drawn empty rather than guessed full.
+    """
+    pc = _sub(stash, "prompt_cache")
+    ttl = str(pc.get("ttl") or "")
+    span = ttl_seconds(ttl)
+    recache = _num(pc.get("recache_tokens_if_cold"))
+    exp = _num(pc.get("expires_at"))
+    if exp is None:
+        return {"state": "unknown", "left": None, "pct": None,
+                "ttl": ttl, "recache": recache}
+    left = int(exp - now)
+    if left <= 0:
+        return {"state": "cold", "left": 0, "pct": 0.0,
+                "ttl": ttl, "recache": recache}
+    return {"state": "warm", "left": left,
+            "pct": min(1.0, left / span) if span else None,
+            "ttl": ttl, "recache": recache}
+
+
+def spend_sample(session_id: str, cost: float | None, now: float) -> None:
+    """record one (time, running total) point, and drop what fell out of view.
+
+    the point at or before the window start is kept: without it the oldest bar
+    has no baseline to subtract from and would read zero on a busy session.
+    """
+    if cost is None:
+        return
+    with _spend_lock:
+        pts = _spend_seen.setdefault(session_id, [])
+        if not pts or pts[-1][1] != cost or now - pts[-1][0] >= SPEND_MIN_GAP:
+            pts.append((now, cost))
+        cut = now - SPEND_WINDOW
+        base = 0
+        for i, (t, _) in enumerate(pts):
+            if t <= cut:
+                base = i
+        del pts[:base]
+
+
+def _spend_forget(now: float, keep: set[str]) -> None:
+    """drop buffers for sessions that have not been sampled in two windows."""
+    with _spend_lock:
+        for sid in [s for s in _spend_seen if s not in keep]:
+            pts = _spend_seen[sid]
+            if not pts or now - pts[-1][0] > SPEND_WINDOW * 2:
+                del _spend_seen[sid]
+
+
+def _cost_at(pts: list[tuple[float, float]], t: float) -> float | None:
+    """the running total as of `t`: the last sample taken at or before it."""
+    val = None
+    for ts, c in pts:
+        if ts > t:
+            break
+        val = c
+    return val
+
+
+def spend_bars(session_id: str, now: float, bars: int) -> list[float]:
+    """spend per equal slice of the last `SPEND_WINDOW`, oldest slice first.
+
+    deltas of a running total, so a slice with no sample at either end reads
+    zero rather than a guess. the buffer only fills while something is polling
+    the board, which is this figure's honest limit: a page open two minutes has
+    eight minutes of empty bars behind it, and a server restart clears the lot.
+    """
+    with _spend_lock:
+        pts = list(_spend_seen.get(session_id) or ())
+    if len(pts) < 2:
+        return [0.0] * bars
+    width = SPEND_WINDOW / bars
+    t0 = now - SPEND_WINDOW
+    out = []
+    for i in range(bars):
+        a = _cost_at(pts, t0 + i * width)
+        b = _cost_at(pts, t0 + (i + 1) * width)
+        out.append(round(max(0.0, b - a), 6) if a is not None and b is not None else 0.0)
+    return out
+
+
+def uncommitted_count(cwd: str, now: float) -> int | None:
+    """how many paths `git status --porcelain` reports in a directory.
+
+    a repo fact, never a session one — several sessions share a checkout, so the
+    board words it against the repo rather than crediting one session with the
+    changes. `None` when the path is not a repo, or git did not answer in time.
+    """
+    if not cwd:
+        return None
+    with _git_lock:
+        hit = _git_seen.get(cwd)
+        if hit and now - hit[0] < GIT_CACHE_SECS:
+            return hit[1]
+    n = None
+    try:
+        p = subprocess.run(
+            ["git", "-C", cwd, "status", "--porcelain"],
+            capture_output=True, text=True, timeout=4,
+        )
+        if p.returncode == 0:
+            n = sum(1 for line in p.stdout.splitlines() if line.strip())
+    except (OSError, subprocess.SubprocessError):
+        n = None
+    with _git_lock:
+        _git_seen[cwd] = (now, n)
+    return n
+
+
+def blocked_question(path: Path | None) -> str:
+    """the last thing the model said, for a session that is stopped on you.
+
+    `activity_of` reads the same text capped at one card-width clause; the hero
+    quotes it, so it is read again with room for the actual question.
+    """
+    if path is None:
+        return ""
+    for d in reversed(tail_records(path)):
+        if d.get("type") != "assistant":
+            continue
+        blocks = message_blocks(d.get("message") or {})
+        text = next(
+            (t for k, t, _ in reversed(blocks) if k == "text" and t.strip()), ""
+        )
+        if text:
+            return _clause(_MD_MARKS.sub("", text), cap=QUESTION_CHARS)
+    return ""
+
+
+def _finished_rows(con, live_ids: set[str], now: float) -> list[dict]:
+    """sessions whose stash is recent but whose process is gone.
+
+    heuristic on purpose: nothing records a session's end, so "ended" means the
+    registry no longer holds the pid and the statusline stopped writing. the
+    timestamp is the stash's last write, which is a lower bound on the end, so
+    the ui words it "last active". subagent payloads are skipped — a subagent
+    finishing is its parent's business, and the parent is usually still running.
+    """
+    cand = []
+    try:
+        files = list(STATUS_STASH.glob("*.json"))
+    except OSError:
+        return []
+    for f in files:
+        sid = f.stem
+        if sid in live_ids:
+            continue
+        try:
+            mtime = f.stat().st_mtime
+        except OSError:
+            continue
+        if now - mtime > FINISHED_WINDOW:
+            continue
+        cand.append((mtime, sid))
+    cand.sort(reverse=True)
+    cand = cand[:FINISHED_MAX]
+
+    titles: dict[str, sqlite3.Row] = {}
+    if cand:
+        ids = [sid for _, sid in cand]
+        marks = ",".join("?" * len(ids))
+        for r in con.execute(
+            "SELECT session_id, title, project FROM sessions"
+            f" WHERE kind = 'session' AND session_id IN ({marks})",
+            ids,
+        ):
+            titles[r["session_id"]] = r
+
+    out = []
+    for mtime, sid in cand:
+        stash = stash_read(sid)
+        if stash.get("agent_type") or _sub(stash, "agent"):
+            continue
+        row = titles.get(sid)
+        cwd = str(stash.get("cwd") or (row["project"] if row else ""))
+        money = _sub(stash, "cost")
+        out.append({
+            "session_id": sid,
+            "name": (row["title"] if row else "") or str(stash.get("session_name") or ""),
+            "project": cwd,
+            "readable": bool(stash),
+            "last_active": int(now - mtime),
+            "cost": _num(money.get("total_cost_usd")),
+            "lines_added": _num(money.get("total_lines_added")),
+            "lines_removed": _num(money.get("total_lines_removed")),
+            "uncommitted": uncommitted_count(cwd, now),
+            "cache": cache_state(stash, now),
+        })
+    return out
+
+
+def live_board(con) -> dict:
+    """everything the live board draws, on top of what `/api/live` already says.
+
+    the running rows come from `live_sessions` unchanged and each gains what
+    only the statusline stash knows — a prompt-cache countdown and the live cost
+    — plus a spend sparkline this process samples for itself, the session's
+    subagent count, and, for the one session stopped on you, its question.
+    """
+    now = time.time()
+    board = live_sessions(con)
+    rows = board["sessions"]
+    regs = {str(d["sessionId"]): d for d in registry_rows()}
+
+    agents: dict[str, int] = {}
+    if rows:
+        ids = [r["session_id"] for r in rows]
+        marks = ",".join("?" * len(ids))
+        for r in con.execute(
+            "SELECT parent_id, COUNT(*) AS n FROM sessions WHERE kind = 'subagent'"
+            f" AND parent_id IN ({marks}) GROUP BY parent_id",
+            ids,
+        ):
+            agents[r["parent_id"]] = r["n"]
+
+    for r in rows:
+        sid = r["session_id"]
+        stash = stash_read(sid)
+        reg = regs.get(sid) or {}
+        cost = _num(_sub(stash, "cost").get("total_cost_usd"))
+        spend_sample(sid, cost, now)
+        if cost is not None:
+            r["cost"] = cost
+        r["model"] = str(_sub(stash, "model").get("display_name") or "")
+        r["cache"] = cache_state(stash, now)
+        r["spend"] = spend_bars(sid, now, ROW_BARS)
+        r["agents"] = agents.get(sid, 0)
+        r["started_at"] = _num(reg.get("startedAt"))
+        r["status_since"] = _num(reg.get("statusUpdatedAt"))
+        r["question"] = (
+            blocked_question(transcript_path(sid, str(reg.get("cwd") or "")))
+            if r["status"] == "waiting"
+            else ""
+        )
+
+    finished = _finished_rows(con, set(regs), now)
+    for f in finished:
+        spend_sample(f["session_id"], f["cost"], now)
+
+    _spend_forget(now, {r["session_id"] for r in rows} | {f["session_id"] for f in finished})
+
+    # the header sparkline is every running session added up bar by bar, so its
+    # shape is the machine's spend and not the loudest session's
+    bars = [spend_bars(r["session_id"], now, HEADER_BARS) for r in rows]
+    total = [round(sum(col), 6) for col in zip(*bars)] if bars else [0.0] * HEADER_BARS
+    with _spend_lock:
+        sampled = any(len(pts) > 1 for pts in _spend_seen.values())
+    return {
+        "sessions": rows,
+        "finished": finished,
+        # `sampled` separates "nothing was spent" from "nothing has been
+        # watched yet", which look identical in the bars and are not the same
+        "spend": {"bars": total, "total": round(sum(total), 6),
+                  "window": SPEND_WINDOW, "sampled": sampled},
+    }
+
+
+def stash_check() -> int:
+    """read every real statusline stash through the board's parsers.
+
+    the payload is claude code's undocumented shape and the board reads eight
+    fields out of it, so the one check worth having is that no real file makes a
+    parser raise — including the ones that carry no `prompt_cache`.
+    """
+    try:
+        files = sorted(STATUS_STASH.glob("*.json"))
+    except OSError:
+        files = []
+    if not files:
+        print("stash: nothing at ~/.cache/cc-browse-tray/status, skipped")
+        return 0
+    now = time.time()
+    warm = 0
+    for f in files:
+        st = cache_state(stash_read(f.stem), now)
+        if st["state"] != "unknown":
+            warm += 1
+    print(f"stash: {len(files)} payloads parsed, {warm} carry a prompt cache")
+    return 0
+
+
 def full_session(con, session_id: str) -> dict:
     row = con.execute(
         "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
@@ -2398,6 +2760,9 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/live":
                 with self.lock:
                     self._json(live_sessions(self.con))
+            elif url.path == "/api/live-board":
+                with self.lock:
+                    self._json(live_board(self.con))
             elif url.path == "/api/waiting":
                 self._json(waiting_count())
             elif url.path == "/api/status":

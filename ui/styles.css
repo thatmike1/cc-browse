@@ -520,59 +520,133 @@ body.tl #tlnav { display: flex; }
    running, and a filter that changed nothing would be worse than no filter */
 body.live #tlnav { display: none; }
 #live { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 18px 26px 60px; }
-.live-grid {
-  display: grid; gap: 10px;
-  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+
+/* ---------- live board: triage, cache timers, what finished ---------- */
+/* the card grid this replaced gave every session the same weight. the board's
+   whole claim is that one of them is stopped on you and the rest are ambient,
+   so the blocked one gets a hero and everything else gets a line. */
+.lb { display: flex; flex-direction: column; gap: 14px; }
+.lb .tnum { font-variant-numeric: tabular-nums; }
+.lb .mono { font-family: ui-monospace, monospace; }
+
+.lb-hero {
+  flex: none; background: var(--raised); border: 1px solid var(--accent-dim);
+  border-radius: var(--r-lg); padding: 18px 20px;
+  display: flex; gap: 20px; align-items: flex-start;
 }
-.live-card {
+.lb-hero-main { flex: 1; min-width: 0; }
+.lb-hero-top { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; flex-wrap: wrap; }
+.lb-flag {
+  font-size: 11px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--accent); display: inline-flex; align-items: center; gap: 7px;
+}
+.lb-flag i {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+  animation: lanepulse 1.8s ease-in-out infinite;
+}
+.lb-since { font-size: 12px; color: var(--faint); }
+.lb-chip {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 11px; padding: 2px 8px;
+  border-radius: var(--r-sm); background: var(--raised);
+  border: 1px solid var(--line); color: var(--dim);
+}
+.lb-hero-title {
+  font-size: 20px; font-weight: 600; letter-spacing: -.015em;
+  line-height: 1.3; margin-bottom: 11px;
+}
+/* the question, in the model's words — the board exists to save you the trip
+   into the session to find out what it wanted */
+.lb-hero-q {
+  font-size: 14.5px; line-height: 1.6; color: var(--dim);
+  border-left: 2px solid var(--accent); padding-left: 14px;
+}
+.lb-hero-q.none { color: var(--faint); font-style: italic; }
+.lb-hero-side {
+  width: 212px; flex: none; border-left: 1px solid var(--line); padding-left: 20px;
+  display: flex; flex-direction: column; gap: 10px; font-size: 12px; color: var(--faint);
+}
+.lb-kv { display: flex; justify-content: space-between; align-items: baseline; gap: 9px; }
+.lb-kv .v { color: var(--text); }
+.lb-kv .v.accent { color: var(--accent); }
+.lb-cache {
+  display: flex; flex-direction: column; gap: 5px; margin-top: 2px;
+  padding-top: 11px; border-top: 1px solid var(--line-soft);
+}
+.lb-note { line-height: 1.45; }
+.lb-copy {
+  margin-top: 2px; justify-content: center; font-size: 12px;
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px;
+  border-radius: var(--r-sm); background: var(--raised);
+  border: 1px solid var(--line); color: var(--dim);
+}
+.lb-copy:hover { border-color: var(--faint); color: var(--text); }
+
+/* the depleting bar. an empty track is the honest render for a session that
+   never reported a cache, so the fill is what carries the reading. */
+.lb-bar {
+  display: block; height: 3px; border-radius: 2px;
+  background: var(--line-soft); overflow: hidden;
+}
+.lb-bar i { display: block; height: 3px; background: var(--assistant); }
+.lb-mini.off .lb-bar i { background: var(--faint); }
+
+.lb-sec { display: flex; align-items: center; gap: 14px; padding: 0 2px; }
+.lb-h {
+  font-size: 11px; font-weight: 700; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--faint);
+}
+.lb-rule { flex: 1; height: 1px; background: var(--line-soft); }
+.lb-spend { font-size: 12px; color: var(--faint); }
+.lb-spend.none { font-style: italic; opacity: .8; }
+
+.lb-spark { display: flex; gap: 2px; align-items: flex-end; flex: none; }
+.lb-spark i { background: var(--accent); opacity: .5; }
+.lb-spark.head i.now { opacity: 1; }
+.lb-spark.row i { background: var(--assistant); opacity: .45; }
+.lb-spark.agent i { background: var(--agent); opacity: .35; }
+
+.lb-list { display: flex; flex-direction: column; gap: 7px; }
+.lb-row {
+  display: flex; align-items: center; gap: 13px;
   background: var(--panel); border: 1px solid var(--line);
-  border-radius: var(--r); padding: 13px 15px;
-  display: flex; flex-direction: column; gap: 7px;
+  border-radius: var(--r); padding: 11px 15px;
 }
-/* the one card you are meant to see from across the room */
-.live-card.waiting { border-color: var(--accent-dim); background: var(--raised); }
-.live-top { display: flex; align-items: baseline; gap: 9px; }
-.live-card h3 {
-  font-size: 16px; font-weight: 600; letter-spacing: -.011em;
+/* finished rows carry no fill: they are read once and then ignored */
+.lb-row.done { background: none; border-color: var(--line-soft); }
+.lb-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--assistant); }
+.lb-dot.busy { animation: lanepulse 1.8s ease-in-out infinite; }
+.lb-dot.waiting { background: var(--accent); }
+.lb-dot.agent { background: var(--agent); }
+.lb-dot.dead { background: none; border: 1px dashed var(--faint); }
+.lb-tick { flex: none; }
+.lb-name {
+  width: 172px; flex: none; font-size: 14px; font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.live-card .meta {
-  display: flex; gap: 7px; align-items: center; flex-wrap: wrap;
-  font-size: 12px; color: var(--faint);
+.lb-row.done .lb-name { font-weight: 400; color: var(--dim); }
+.lb-act {
+  flex: 1; min-width: 0; font-size: 12px; color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.live-card .meta .proj { color: var(--dim); font-weight: 500; }
-.live-card .meta .sep { opacity: .45; }
-.live-card .meta .branch {
-  max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.lb-act b { color: var(--text); font-weight: 600; }
+.lb-act.prose, .lb-act.none, .lb-row.done .lb-act { color: var(--faint); }
+.lb-act.prose, .lb-act.none { font-style: italic; }
+.lb-act .fail { color: var(--accent); font-weight: 600; font-style: normal; }
+.lb-mini {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  font-size: 11px; color: var(--faint);
 }
-.st {
-  margin-left: auto; flex: none; font-size: 11px; font-weight: 600;
-  letter-spacing: .04em; border-radius: 999px; padding: 2px 9px;
-  border: 1px solid var(--line); color: var(--dim);
-  display: inline-flex; align-items: center; gap: 6px;
+.lb-mini .lb-bar { width: 34px; }
+.lb-mini .tnum { width: 30px; }
+.lb-quiet { font-size: 11px; color: var(--faint); flex: none; width: 40px; text-align: right; }
+.lb-cost { font-size: 11px; color: var(--faint); flex: none; width: 50px; text-align: right; }
+
+/* under a laptop width the hero's side column stops fitting beside the quote */
+@media (max-width: 860px) {
+  .lb-hero { flex-direction: column; gap: 14px; }
+  .lb-hero-side { width: auto; border-left: none; padding-left: 0; }
+  .lb-name { width: 120px; }
 }
-.st i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.st.waiting { color: var(--accent); border-color: var(--accent-dim); }
-.st.busy { color: var(--assistant); }
-.st.busy i { animation: lanepulse 1.8s ease-in-out infinite; }
-.st.idle, .st.shell { color: var(--dim); }
-/* a status we do not recognise is the absence of a reading, never "fine" */
-.st.unknown { color: var(--faint); border-style: dashed; }
-.live-act {
-  font-size: 12px; color: var(--dim); line-height: 1.45;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden; min-height: 34px;
-}
-.live-act b { color: var(--text); font-weight: 600; font-family: ui-monospace, monospace; }
-.live-act.prose { color: var(--faint); font-style: italic; }
-.live-act .fail { color: var(--accent); font-weight: 600; }
-.live-act .none { color: var(--faint); opacity: .6; }
-.live-foot {
-  display: flex; gap: 7px; align-items: center; font-size: 11px;
-  color: var(--faint); font-variant-numeric: tabular-nums;
-  border-top: 1px solid var(--line-soft); padding-top: 7px;
-}
-.live-foot .tok { margin-left: auto; }
 
 /* ---------- usage breakdown ---------- */
 /* `hidden` loses to a class or id rule that sets display, so say it here */
