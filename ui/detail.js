@@ -511,8 +511,13 @@ export async function openSession(id, want = 'transcript') {
   $('#dview').hidden = !hasLanes;
   showView(want === 'lanes' && hasLanes ? 'lanes' : 'transcript');
 
-  // arriving from a search means the tail is the wrong place to land
-  if (state.q && state.mode === 'content') {
+  // arriving from a search means the tail is the wrong place to land. a blended
+  // result has to be landed by the mode that actually matched it, not by a mode
+  // the header no longer picks: a semantic neighbour has no literal terms to
+  // mark, and a title hit does.
+  const row = ui.sessions.find((s) => s.session_id === id) || {};
+  const hitMode = row.hit_mode || state.mode;
+  if (state.q && (hitMode === 'content' || hitMode === 'meta')) {
     const terms = state.q.match(/[\w#@./-]{2,}/g);
     if (terms) {
       // fts5 splits on punctuation and underscores, so "SCHEMA_VERSION" matched
@@ -527,9 +532,9 @@ export async function openSession(id, want = 'transcript') {
       const alt = [...parts].sort((a, b) => b.length - a.length).map(escRe).join('|');
       marks = wrapMatches(new RegExp(alt, 'gi'));
     }
-  } else if (state.q && state.mode === 'semantic') {
+  } else if (state.q && hitMode === 'semantic') {
     findSource = 'semantic';
-    marks = markSemantic((ui.sessions.find((s) => s.session_id === id) || {}).snip);
+    marks = markSemantic(row.snip);
   }
   if (findSource === 'search') fqEl.value = state.q;
   // arriving from a search always shows the bar, even on zero matches — landing

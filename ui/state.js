@@ -2,7 +2,9 @@
 // module-local `let` in the file that owns it.
 
 export const state = {
-  q: '', mode: 'meta', project: '', branch: '', since: '', titled: '', lanes: '',
+  // `mode` no longer picks a search: every query runs all three and the server
+  // blends them. it stays on the wire because an empty query ignores it.
+  q: '', mode: 'blend', project: '', branch: '', since: '', titled: '', lanes: '',
   mincost: '', sort: 'recent',
 };
 

@@ -12,68 +12,37 @@
 <link rel="modulepreload" href="/ui/detail.js">
 <link rel="modulepreload" href="/ui/timeline.js">
 <link rel="modulepreload" href="/ui/live-board.js">
+<link rel="modulepreload" href="/ui/scope-drawer.js">
 <script type="module" src="/ui/main.js"></script>
+<script type="module" src="/ui/scope-drawer.js"></script>
 </head>
 <body>
 <header>
   <div class="bar">
     <span class="brand"><span class="dot"></span>cc-browse</span>
 
-    <div class="seg" id="view">
-      <button data-v="list" class="on">list</button>
-      <button data-v="day">day</button>
-      <button data-v="week">week</button>
-      <button data-v="month">month</button>
-      <button data-v="live">live</button>
-    </div>
+    <button id="scope-chip" title="set the scope (S)">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M4 6h16M7 12h10M10 18h4"/>
+      </svg>
+      <span class="read"></span>
+      <span class="kbd">S</span>
+    </button>
 
     <label class="search">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
         <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>
       </svg>
-      <input id="q" placeholder="search titles or paste a session id…" autocomplete="off" spellcheck="false">
+      <input id="q" placeholder="search everything, or paste a session id…" autocomplete="off" spellcheck="false">
+      <span class="qmeta" id="qmeta"></span>
       <span class="kbd">/</span>
     </label>
 
-    <div class="seg" id="mode">
-      <button data-v="meta" class="on">titles</button>
-      <button data-v="content">full text</button>
-      <button data-v="semantic" id="mode-semantic" hidden>meaning</button>
-    </div>
-
-    <div class="pop" id="pop-project">
-      <button class="trigger">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
-        </svg>
-        <span class="label">all projects</span>
-        <svg class="caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 9l6 6 6-6"/></svg>
-      </button>
-      <div class="menu">
-        <div class="menu-search">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" style="color:var(--faint)"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-          <input placeholder="filter projects…" autocomplete="off">
-        </div>
-        <div class="menu-list"></div>
-      </div>
-    </div>
-
-    <div class="pop" id="pop-branch">
-      <button class="trigger">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="9" r="2.5"/>
-          <path d="M6 8.5v7M8.5 7h4A3 3 0 0116 9.5"/>
-        </svg>
-        <span class="label">all branches</span>
-        <svg class="caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 9l6 6 6-6"/></svg>
-      </button>
-      <div class="menu right">
-        <div class="menu-search">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" style="color:var(--faint)"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-          <input placeholder="filter branches…" autocomplete="off">
-        </div>
-        <div class="menu-list"></div>
-      </div>
+    <div id="tlnav">
+      <button id="tlprev" title="previous">‹</button>
+      <button id="tltoday">today</button>
+      <button id="tlnext" title="next">›</button>
+      <span class="period" id="tllabel"></span>
     </div>
 
     <div class="pop" id="pop-sort">
@@ -86,40 +55,64 @@
       </button>
       <div class="menu right" style="min-width:190px"><div class="menu-list"></div></div>
     </div>
+
+    <div class="seg" id="view">
+      <button data-v="list" class="on">list</button>
+      <button data-v="day">day</button>
+      <button data-v="week">week</button>
+      <button data-v="month">month</button>
+    </div>
+
+    <span class="bar-sep"></span>
+
+    <button id="live-btn" title="sessions waiting on you">
+      <span class="dot"></span>Live
+      <span class="n" id="live-n" hidden>0</span>
+    </button>
   </div>
 
-  <div class="bar" style="padding-top:0">
-    <div id="tlnav">
-      <button id="tlprev" title="previous">‹</button>
-      <button id="tltoday">today</button>
-      <button id="tlnext" title="next">›</button>
-      <span class="period" id="tllabel"></span>
-    </div>
-    <div class="seg" id="since">
-      <button data-v="" class="on">all time</button>
-      <button data-v="1">today</button>
-      <button data-v="7">7 days</button>
-      <button data-v="30">30 days</button>
-    </div>
-    <div class="seg" id="titled">
-      <button data-v="" class="on">any</button>
-      <button data-v="1">titled only</button>
-    </div>
-    <div class="seg" id="haslanes">
-      <button data-v="" class="on">any</button>
-      <button data-v="1">with lanes</button>
-    </div>
-    <div class="seg" id="mincost">
-      <button data-v="" class="on">any cost</button>
-      <button data-v="0.5">over $0.50</button>
-      <button data-v="2">over $2</button>
-      <button data-v="10">over $10</button>
-    </div>
-    <div class="stats" id="stats" style="padding:0;margin-left:auto"></div>
+  <div class="subbar">
+    <div class="narrow" id="searchmodes" hidden></div>
+    <div class="stats" id="stats"></div>
   </div>
 </header>
 
 <main>
+  <div id="scope" hidden>
+    <div class="sc-scrim"></div>
+    <div class="sc-panel" role="dialog" aria-label="scope">
+      <div class="sc-head">
+        <div class="sc-title">
+          <span>Scope</span>
+          <span class="esc">close <span class="kbd">Esc</span></span>
+        </div>
+        <label class="sc-filter">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+            <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>
+          </svg>
+          <input id="scope-q" placeholder="filter…" autocomplete="off" spellcheck="false">
+        </label>
+      </div>
+      <div class="sc-body">
+        <div class="sc-sec" id="sc-projects"></div>
+        <div class="sc-sec" id="sc-branches"></div>
+        <div class="sc-sec">
+          <div class="sc-h"><span class="k">Range</span></div>
+          <div class="seg sc-seg" id="sc-since">
+            <button data-v="" class="on">all</button>
+            <button data-v="1">today</button>
+            <button data-v="7">7d</button>
+            <button data-v="30">30d</button>
+          </div>
+        </div>
+        <div class="sc-sec" id="sc-flags"></div>
+      </div>
+      <div class="sc-foot">
+        <span><b id="sc-count">—</b> sessions match</span>
+        <button id="sc-reset">Reset</button>
+      </div>
+    </div>
+  </div>
   <div id="list"></div>
   <div id="detail">
     <div class="placeholder" id="dempty">

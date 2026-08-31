@@ -7,6 +7,12 @@ export const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 export const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 export const shortProj = (p) => (p || '').split('/').filter(Boolean).pop() || '—';
 
+// four hues plus grey, in the order the facets come back (most sessions first).
+// over 188 indexed days, four hues cover 85% of days and five cover 94%, so the
+// tail collapses to grey rather than inventing colours nothing can tell apart.
+export const PROJECT_COLORS = ['var(--accent)', 'var(--user)', 'var(--assistant)', 'var(--agent)'];
+export const projectColor = (i) => PROJECT_COLORS[i] || 'var(--line)';
+
 export function toast(msg) {
   const t = $('#toast');
   t.textContent = msg; t.classList.add('show');

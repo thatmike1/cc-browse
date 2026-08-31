@@ -432,8 +432,7 @@ code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 /* ---------- whole-day timeline ---------- */
 /* the timeline is a different question ("where did the day go"), so the
    list's search and filter controls step aside for the period navigator */
-body.tl .search, body.tl #mode, body.tl #pop-sort, body.tl #since,
-body.tl #titled, body.tl #haslanes, body.tl #mincost, body.tl #stats { display: none; }
+body.tl .search, body.tl #pop-sort, body.tl .subbar { display: none; }
 #tlnav { display: none; gap: 7px; align-items: center; }
 body.tl #tlnav { display: flex; }
 #tlnav button {
@@ -519,7 +518,7 @@ body.tl #tlnav { display: flex; }
    timeline's cleared header but not its period navigator */
 /* nothing in the header applies here: the board is everything that is
    running, and a filter that changed nothing would be worse than no filter */
-body.live #tlnav, body.live #pop-project, body.live #pop-branch { display: none; }
+body.live #tlnav { display: none; }
 #live { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 18px 26px 60px; }
 .live-grid {
   display: grid; gap: 10px;
@@ -643,6 +642,201 @@ body.live #tlnav, body.live #pop-project, body.live #pop-branch { display: none;
   opacity: 0; pointer-events: none; transition: all .22s var(--ease);
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ---------- scope drawer, blended search, live badge ---------- */
+/* the bar reads the scope back and the drawer sets it, so nothing in the
+   header is a filter control any more — the chip, the search and the two
+   view controls are all that is left of eight */
+.bar-sep { width: 1px; height: 22px; background: var(--line); }
+
+#scope-chip {
+  display: inline-flex; align-items: center; gap: 9px; height: 36px;
+  padding: 0 11px 0 12px; border-radius: var(--r);
+  background: var(--raised); border: 1px solid var(--line);
+  color: var(--dim); font-size: 12.5px;
+  transition: border-color .15s, color .15s;
+}
+#scope-chip:hover { border-color: var(--faint); color: var(--text); }
+#scope-chip.set { border-color: var(--accent-dim); color: var(--accent); }
+#scope-chip svg { flex: none; }
+#scope-chip .read {
+  display: inline-flex; align-items: center;
+  max-width: 300px; overflow: hidden; white-space: nowrap;
+}
+#scope-chip .read b { font-weight: 600; }
+#scope-chip .read span { color: var(--dim); }
+/* the separator is scenery, not a value: it stays a step behind either side */
+#scope-chip .read i { font-style: normal; margin: 0 6px; color: var(--line); }
+#scope-chip.set .read i { color: var(--accent-dim); }
+#scope-chip.set .kbd { border-color: var(--accent-dim); color: var(--accent); }
+
+/* a query in flight is the one thing on the bar worth widening for */
+.search.active {
+  height: 44px; font-size: 15px;
+  border-color: var(--accent-dim); box-shadow: 0 0 0 3px rgba(224,164,95,.09);
+}
+.search.active svg { color: var(--accent); }
+.search .qmeta {
+  font-size: 12px; color: var(--faint); white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+#live-btn {
+  display: inline-flex; align-items: center; gap: 8px; height: 36px;
+  padding: 0 12px; border-radius: var(--r);
+  background: var(--raised); border: 1px solid var(--line);
+  color: var(--dim); font-size: 13px; font-weight: 600;
+  transition: border-color .15s, color .15s, background .15s;
+}
+#live-btn:hover { border-color: var(--faint); color: var(--text); }
+#live-btn .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+/* the badge carries the only count that costs something by being missed */
+#live-btn.waiting { border-color: var(--accent-dim); color: var(--accent); }
+#live-btn.waiting .dot { animation: lanepulse 1.8s ease-in-out infinite; }
+#live-btn .n {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--accent); color: var(--bg);
+  font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+body.live #live-btn {
+  background: var(--accent); border-color: var(--accent);
+  color: var(--bg); font-weight: 700;
+}
+body.live #live-btn .n { background: rgba(19,18,24,.25); color: var(--bg); }
+body.live #scope-chip { display: none; }
+
+/* in list view the search's flex:1 pushes the right-hand group over; in the
+   wide views the search is gone, so the group has to claim the space itself */
+body.tl #view { margin-left: auto; }
+
+.subbar { display: flex; align-items: center; }
+.narrow {
+  display: flex; gap: 7px; align-items: center; flex-wrap: wrap;
+  padding: 0 15px 9px; font-size: 12px; color: var(--faint); margin-right: auto;
+}
+.schip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--raised); border: 1px solid var(--line);
+  border-radius: 999px; padding: 2px 9px; color: var(--dim); font-size: 12px;
+  transition: border-color .15s, color .15s;
+}
+.schip:hover:not(:disabled) { border-color: var(--faint); color: var(--text); }
+.schip b { color: var(--dim); font-weight: 600; font-variant-numeric: tabular-nums; }
+.schip .ms { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.schip.on, .schip.on b { color: var(--accent); }
+.schip.on { border-color: var(--accent-dim); }
+.schip:disabled { opacity: .45; cursor: default; }
+
+/* a blended row says which mode found it, and how well, on its own scale */
+.row.blended { padding: 13px 14px; }
+.row.blended .title { font-size: 15px; }
+.row.blended.content { --hm: var(--accent); }
+.row.blended.semantic { --hm: var(--agent); }
+.row.blended.meta { --hm: var(--user); }
+.row .hit { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.row .hit .m {
+  font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+  font-weight: 700; color: var(--hm);
+}
+.row .hit .bar {
+  flex: 1; height: 3px; border-radius: 2px;
+  background: var(--line-soft); overflow: hidden;
+}
+.row .hit .bar i { display: block; height: 3px; background: var(--hm); }
+.row .hit .sc { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.row.blended .snip { border-left: 2px solid var(--hm); padding-left: 11px; }
+
+/* the drawer floats over the content and costs a gesture, where a sidebar
+   would own 300px of width permanently for something set this rarely */
+main { position: relative; }
+#scope { position: absolute; inset: 0; z-index: 40; }
+.sc-scrim { position: absolute; inset: 0; background: rgba(10,9,14,.6); }
+.sc-panel {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 300px;
+  background: var(--panel); border-right: 1px solid var(--line);
+  box-shadow: var(--shadow); display: flex; flex-direction: column;
+  animation: scopein .18s var(--ease);
+}
+@keyframes scopein { from { transform: translateX(-16px); opacity: .3; } }
+.sc-head {
+  flex: none; padding: 14px 14px 11px; border-bottom: 1px solid var(--line-soft);
+  display: flex; flex-direction: column; gap: 11px;
+}
+.sc-title {
+  display: flex; align-items: center; gap: 9px;
+  font-size: 13px; font-weight: 600; letter-spacing: -.01em;
+}
+.sc-title .esc {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 400; color: var(--faint);
+}
+.sc-title .kbd { padding: 2px 5px; }
+.sc-filter {
+  flex: none; display: flex; align-items: center; gap: 8px; height: 32px;
+  padding: 0 10px; border-radius: var(--r-sm);
+  background: var(--bg); border: 1px solid var(--line);
+}
+.sc-filter:focus-within { border-color: var(--accent-dim); }
+.sc-filter svg { flex: none; color: var(--faint); }
+.sc-filter input { flex: 1; min-width: 0; outline: none; font-size: 12px; }
+.sc-filter input::placeholder { color: var(--faint); }
+.sc-body {
+  flex: 1; overflow-y: auto; overscroll-behavior: contain;
+  padding: 12px 8px; display: flex; flex-direction: column; gap: 16px;
+}
+.sc-sec { display: flex; flex-direction: column; gap: 1px; }
+.sc-h { display: flex; align-items: baseline; gap: 8px; padding: 0 6px 7px; }
+.sc-h .k {
+  font-size: 10px; font-weight: 700; letter-spacing: .11em;
+  text-transform: uppercase; color: var(--faint);
+}
+.sc-h .n { margin-left: auto; font-size: 11px; color: var(--faint); }
+/* one row height, no pills: a project is a line in a list, not an object */
+.sc-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; height: 30px;
+  padding: 0 8px; border-radius: var(--r-sm); text-align: left;
+}
+.sc-row:hover { background: var(--hover); }
+.sc-row.on { background: var(--raised); }
+.sc-row .bar { width: 3px; height: 14px; border-radius: 2px; flex: none; }
+.sc-row .name {
+  flex: 1; font-size: 13px; color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sc-row.on .name { color: var(--accent); font-weight: 600; }
+.sc-row .n { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.sc-row.on .n { color: var(--accent); opacity: .8; }
+.sc-row.br { height: 28px; }
+.sc-row.br .name { font-family: ui-monospace, monospace; font-size: 12px; }
+.sc-more {
+  display: flex; align-items: center; gap: 10px; height: 30px;
+  padding: 0 8px; color: var(--faint); font-size: 12px;
+}
+.sc-more .bar { width: 3px; flex: none; }
+.sc-seg { height: 32px; margin: 0 6px; }
+.sc-check {
+  display: flex; align-items: center; gap: 10px; width: 100%; height: 28px;
+  padding: 0 8px; border-radius: var(--r-sm); text-align: left;
+}
+.sc-check:hover { background: var(--hover); }
+.sc-check i {
+  width: 14px; height: 14px; border-radius: 4px; flex: none;
+  border: 1px solid var(--line); display: grid; place-items: center;
+  color: transparent;
+}
+.sc-check.on i { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.sc-check span { font-size: 12.5px; color: var(--dim); }
+.sc-check.on span { color: var(--text); }
+/* the count is the point: it tells you the result before you close the panel */
+.sc-foot {
+  flex: none; border-top: 1px solid var(--line-soft); padding: 11px 14px;
+  display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--dim);
+}
+.sc-foot b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.sc-foot b.pending { opacity: .4; }
+.sc-foot button { margin-left: auto; font-size: 12px; color: var(--faint); }
+.sc-foot button:hover { color: var(--accent); }
 
 ::-webkit-scrollbar { width: 11px; height: 11px; }
 ::-webkit-scrollbar-track { background: transparent; }

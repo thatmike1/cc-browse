@@ -1,7 +1,7 @@
 import { $, $$, ago, dayLabel, esc, fmtCost, highlight, shortProj, unmark } from './helpers.js';
 import { state, ui } from './state.js';
 import { openSession } from './detail.js';
-import { loadTimeline } from './timeline.js';
+import { loadTimeline, setView } from './timeline.js';
 
 const listEl = $('#list');
 
@@ -10,6 +10,9 @@ let facets = { projects: [], branches: [] };
 // never swap the list out from under a read — just offer it
 let pendingRefresh = null;
 let fingerprint = null, statusOff = false;
+// a blended response arrives whole, so the chips can narrow it without asking
+// again: `hits` is everything that came back, `only` is the chip in force
+let blend = null, hits = [], only = '';
 
 const SORTS = [
   ['recent', 'newest first'], ['oldest', 'oldest first'],
@@ -18,7 +21,20 @@ const SORTS = [
   ['relevance', 'best match'],
 ];
 
+const MODE_LABEL = { meta: 'titles', content: 'full text', semantic: 'meaning' };
+// the label a row wears, which is not quite the chip's: a row says what matched
+const HIT_LABEL = { meta: 'title', content: 'full text', semantic: 'meaning' };
 
+
+function hitHtml(s) {
+  if (!s.hit_mode) return '';
+  const pct = Math.round((s.score || 0) * 100);
+  return `<div class="hit ${esc(s.hit_mode)}">
+    <span class="m">${HIT_LABEL[s.hit_mode] || s.hit_mode}</span>
+    <span class="bar"><i style="width:${pct}%"></i></span>
+    <span class="sc">${(s.score || 0).toFixed(2)}</span>
+  </div>`;
+}
 
 function rowHtml(s, i) {
   const hit = s.snip
@@ -29,9 +45,11 @@ function rowHtml(s, i) {
         const who = t && t.sender ? esc(t.sender) : (t && t.role === 'user' ? 'you' : 'claude');
         return t ? `<div class="snip"><b class="who">${who}:</b> ${esc(t.text.slice(0, 220))}</div>` : '';
       })();
-  const title = state.mode === 'meta' && state.q
+  // a title hit is the only one whose terms are actually in the title
+  const title = s.hit_mode === 'meta' && state.q
     ? highlight(esc(s.title || '(empty)'), state.q) : esc(s.title || '(empty)');
-  return `<div class="row" data-i="${i}" data-id="${s.session_id}">
+  return `<div class="row ${s.hit_mode ? 'blended ' + esc(s.hit_mode) : ''}" data-i="${i}" data-id="${s.session_id}">
+    ${hitHtml(s)}
     <div class="title ${s.titled ? '' : 'untitled'}">${title}</div>
     <div class="meta">
       <span class="proj">${esc(shortProj(s.project))}</span>
@@ -68,11 +86,30 @@ export function paintActive() {
   });
 }
 
+function empty() {
+  listEl.innerHTML = `<div class="placeholder" style="height:60vh"><div class="hint">nothing matches${state.q ? ` “${esc(state.q)}”` : ''}${only ? ` in ${MODE_LABEL[only]}` : ''}</div></div>`;
+}
+
+// the chip narrows what came back; it never decides what runs, so this repaints
+// from the response already in hand
+function narrow() {
+  ui.sessions = only ? hits.filter((s) => (s.hit_modes || []).includes(only)) : hits;
+  ui.cursor = -1;
+  offset = ui.sessions.length;
+  listEl.innerHTML = '';
+  if (!ui.sessions.length) empty(); else renderChunk(ui.sessions, 0);
+  renderModes();
+}
+
 export async function load(reset) {
   if (loading || (done && !reset)) return;
   loading = true;
+  // a blended list is only worth reading by best match, and a list with no
+  // query is only worth reading by recency — so the two defaults swap together
+  if (state.q && state.sort === 'recent') { state.sort = 'relevance'; syncControls(); }
+  else if (!state.q && state.sort === 'relevance') { state.sort = 'recent'; syncControls(); }
   if (reset) {
-    offset = 0; ui.sessions = []; done = false;
+    offset = 0; ui.sessions = []; done = false; blend = null; hits = []; only = '';
     listEl.innerHTML = '<div class="skeleton">' + '<div style="width:70%"></div><div style="width:45%"></div><div style="width:88%"></div>'.repeat(4) + '</div>';
   }
   const p = new URLSearchParams({ ...state, offset, limit: 60 });
@@ -83,30 +120,58 @@ export async function load(reset) {
   if (reset) listEl.innerHTML = '';
   if (!r || !r.sessions) {  // the server answered with an error, not a page
     if (reset) listEl.innerHTML = `<div class="placeholder" style="height:60vh"><div class="hint">${esc(r?.error || 'the server could not answer that')}</div></div>`;
-    done = true; loading = false; return;
+    done = true; loading = false; renderModes(); renderStats(); return;
   }
   total = r.total;
-  const start = ui.sessions.length;
-  ui.sessions = ui.sessions.concat(r.sessions);
-  offset += r.sessions.length;
-  if (!r.sessions.length) done = true;
-  if (!ui.sessions.length) {
-    listEl.innerHTML = `<div class="placeholder" style="height:60vh"><div class="hint">nothing matches${state.q ? ` “${esc(state.q)}”` : ''}</div></div>`;
+  if (r.modes) {
+    // blended: every mode's hits arrive in one ranked list, so there is nothing
+    // left to page — the chips work over what is already here
+    blend = r; hits = r.sessions; done = true;
+    narrow();
   } else {
-    renderChunk(r.sessions, start);
+    blend = null; hits = [];
+    const start = ui.sessions.length;
+    ui.sessions = ui.sessions.concat(r.sessions);
+    offset += r.sessions.length;
+    if (!r.sessions.length) done = true;
+    if (!ui.sessions.length) empty(); else renderChunk(r.sessions, start);
+    renderModes();
   }
   renderStats();
   loading = false;
 }
 
+/* ---------------- search mode chips ---------------- */
+
+function renderModes() {
+  const box = $('#searchmodes'), meta = $('#qmeta');
+  $('.search').classList.toggle('active', !!state.q);
+  if (!blend) {
+    box.hidden = true; box.innerHTML = ''; meta.textContent = '';
+    return;
+  }
+  meta.textContent = `${total.toLocaleString()} session${total === 1 ? '' : 's'} · ${Math.round(blend.ms)} ms`;
+  const rows = Object.entries(blend.modes)
+    .filter(([, m]) => m.ran)
+    .sort((a, b) => b[1].n - a[1].n);
+  box.hidden = false;
+  box.innerHTML = '<span class="lead">narrow to</span>' + rows.map(([k, m]) =>
+    `<button class="schip ${only === k ? 'on' : ''}" data-m="${k}" ${m.n ? '' : 'disabled'}>
+      ${MODE_LABEL[k]} <b>${m.n}</b> <span class="ms">${m.ms} ms</span>
+    </button>`).join('');
+}
+
+$('#searchmodes').addEventListener('click', (e) => {
+  const b = e.target.closest('.schip');
+  if (!b) return;
+  only = only === b.dataset.m ? '' : b.dataset.m;
+  narrow();
+});
+
 function renderStats() {
   const bits = [`<b>${total.toLocaleString()}</b> conversations`];
   if (facets.stats) bits.push(`<span class="sep">·</span><b>${facets.stats.messages.toLocaleString()}</b> messages indexed`);
-  const chips = [];
-  if (state.project) chips.push(['project', shortProj(state.project), () => setFilter('project', '')]);
-  if (state.branch) chips.push(['branch', state.branch, () => setFilter('branch', '')]);
   $('#stats').innerHTML = bits.join(' ') +
-    chips.map(([k, v]) => `<span class="pill" data-clear="${k}">${esc(v)}<button aria-label="clear ${k}">×</button></span>`).join('') +
     (pendingRefresh
       ? `<span class="pill" style="border-color:var(--accent-dim);color:var(--accent)" id="refresh-pill">new conversations<button aria-label="load them">↻</button></span>`
       : '');
@@ -118,10 +183,7 @@ $('#stats').addEventListener('click', (e) => {
     pendingRefresh = null;
     loadFacets();
     load(true);
-    return;
   }
-  const pill = e.target.closest('.pill');
-  if (pill && pill.dataset.clear) setFilter(pill.dataset.clear, '');
 });
 
 listEl.addEventListener('scroll', () => {
@@ -133,14 +195,7 @@ listEl.addEventListener('click', (e) => {
   if (row) { ui.cursor = +row.dataset.i; openSession(row.dataset.id); }
 });
 
-/* ---------------- filters ---------------- */
-
-function sinceISO(days) {
-  if (!days) return '';
-  const d = new Date();
-  if (days === '1') d.setHours(0, 0, 0, 0); else d.setDate(d.getDate() - +days);
-  return d.toISOString();
-}
+/* ---------------- sort ---------------- */
 
 function setFilter(key, value) {
   state[key] = value;
@@ -154,37 +209,9 @@ function setFilter(key, value) {
 }
 
 export function syncControls() {
-  $('#pop-project .label').textContent = state.project ? shortProj(state.project) : 'all projects';
-  $('#pop-project .trigger').classList.toggle('set', !!state.project);
-  $('#pop-branch .label').textContent = state.branch || 'all branches';
-  $('#pop-branch .trigger').classList.toggle('set', !!state.branch);
   $('#pop-sort .label').textContent = (SORTS.find((s) => s[0] === state.sort) || SORTS[0])[1];
-  $('#q').placeholder = { content: 'search everything that was said…',
-    semantic: 'describe what it was about…' }[state.mode] || 'search titles or paste a session id…';
   renderStats();
 }
-
-// segmented controls
-function segment(id, key, transform) {
-  $(`#${id}`).addEventListener('click', (e) => {
-    const b = e.target.closest('button'); if (!b) return;
-    $$(`#${id} button`).forEach((x) => x.classList.toggle('on', x === b));
-    state[key] = transform ? transform(b.dataset.v) : b.dataset.v;
-    if (id === 'mode') {
-      // a fuzzy match is only useful ranked by how well it matched
-      if (b.dataset.v === 'semantic') state.sort = 'relevance';
-      else if (state.sort === 'relevance' && b.dataset.v === 'meta') state.sort = 'recent';
-    }
-    syncControls();
-    load(true);
-  });
-}
-segment('mode', 'mode');
-segment('since', 'since', sinceISO);
-segment('titled', 'titled');
-// the detail pane already owns #lanes, so the filter's own id has to differ
-segment('haslanes', 'lanes');
-segment('mincost', 'mincost');
 
 // popovers
 export function closeAllPops(except) {
@@ -238,27 +265,36 @@ function setupPop(id, getItems, onPick, { searchable = true } = {}) {
   if (!searchable) pop.querySelector('.menu-search')?.remove();
 }
 
-setupPop('pop-project',
-  () => [{ label: 'all projects', value: '', on: !state.project },
-    ...facets.projects.map((p) => ({ label: shortProj(p.value), value: p.value, n: p.n, on: state.project === p.value }))],
-  (it) => setFilter('project', it.value));
-
-setupPop('pop-branch',
-  () => [{ label: 'all branches', value: '', on: !state.branch },
-    ...facets.branches.map((b) => ({ label: b.value, value: b.value, n: b.n, on: state.branch === b.value }))],
-  (it) => setFilter('branch', it.value));
-
 setupPop('pop-sort',
-  () => SORTS.filter(([v]) => v !== 'relevance' || state.mode !== 'meta')
+  // best match means nothing without a query to be a match for
+  () => SORTS.filter(([v]) => v !== 'relevance' || state.q)
     .map(([value, label]) => ({ label, value, on: state.sort === value })),
   (it) => setFilter('sort', it.value), { searchable: false });
 
 export async function loadFacets() {
   const p = new URLSearchParams(state.project ? { project: state.project } : {});
   facets = await fetch('/api/facets?' + p).then((r) => r.json());
-  $('#mode-semantic').hidden = !facets.semantic;
   renderStats();
 }
+
+/* ---------------- live badge ---------------- */
+
+// the badge carries one number, and it is not "running": running is ambient,
+// where a session stopped on you costs something for every minute it is missed
+async function pollWaiting() {
+  let d;
+  try { d = await fetch('/api/waiting').then((r) => r.json()); } catch (e) { return; }
+  const n = d && d.waiting;
+  $('#live-n').hidden = !n;
+  $('#live-n').textContent = n || 0;
+  $('#live-btn').classList.toggle('waiting', !!n);
+  $('#live-btn').title = n
+    ? `${n} session${n > 1 ? 's' : ''} waiting on you`
+    : `nothing is waiting on you · ${(d && d.running) || 0} running`;
+}
+$('#live-btn').addEventListener('click', () => setView('live'));
+setInterval(pollWaiting, 10000);
+pollWaiting();
 
 /* ---------------- new conversations while you read ---------------- */
 

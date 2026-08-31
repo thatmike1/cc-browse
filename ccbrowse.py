@@ -29,6 +29,7 @@ import re
 import sqlite3
 import sys
 import threading
+import time
 import webbrowser
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
@@ -1129,6 +1130,11 @@ def list_sessions(
                 "mode": "id",
             }
 
+    if q and mode == "blend":
+        return blended_search(
+            con, q, clause, args, cols, sort=sort, offset=offset
+        )
+
     if q and mode == "semantic":
         hits = semantic_hits(con, q)
         if not hits:
@@ -1241,6 +1247,226 @@ def list_sessions(
         "total": total,
         "sessions": [_shape(dict(r)) for r in rows],
         "mode": mode,
+    }
+
+
+# ---------------------------------------------------------------- blended search
+
+# how many sessions each mode may contribute before blending, and how many
+# survive it. the blend is ranked here and handed over in one response, without
+# paging: the mode chips narrow it in the browser, and a chip count can only be
+# honest if the browser holds the whole set the count describes.
+BLEND_POOL = {"meta": 150, "content": 250, "semantic": 250}
+BLEND_CAP = 300
+
+# which mode gets to label a session that two modes scored identically. a hit
+# scored against what was said outranks one scored against the title, which a
+# conversation can carry without ever discussing the thing.
+BLEND_TIE = {"content": 0, "semantic": 1, "meta": 2}
+
+
+def _norm(raw: dict[str, float]) -> dict[str, float]:
+    """min-max one mode's raw scores onto [0, 1].
+
+    this is the normalisation rule for blending, stated once. bm25 is an
+    unbounded negative, cosine similarity sits in [0.15, 1] and a LIKE match has
+    no score of its own, so no two of them mean the same thing in absolute
+    terms. what does compare across modes is a hit's standing *within its own
+    mode for this query*, and that is exactly what min-max preserves: the mode's
+    best hit is 1, its worst is 0. a mode that returned a single hit has no
+    spread to measure, so that hit normalises to 1 rather than to 0.
+
+    a session's blended score is then the *max* of its normalised per-mode
+    scores, not their sum: the number then still reads as "how well the best
+    mode matched this", which is what the row's mode label and score bar claim.
+    summing would let three mediocre agreements outrank one exact match.
+    """
+    if not raw:
+        return {}
+    lo, hi = min(raw.values()), max(raw.values())
+    if hi - lo < 1e-12:
+        return {k: 1.0 for k in raw}
+    return {k: (v - lo) / (hi - lo) for k, v in raw.items()}
+
+
+def _meta_hits(con, q: str) -> dict[str, dict]:
+    """title/prompt/project/branch substring hits, keyed by session."""
+    like = f"%{q}%"
+    rows = con.execute(
+        "SELECT s.session_id, s.title, s.first_prompt FROM sessions s"
+        f" WHERE {' AND '.join(BASE_FILTERS)}"
+        " AND (s.title LIKE ? OR s.first_prompt LIKE ?"
+        " OR s.project LIKE ? OR s.branch LIKE ?)"
+        " ORDER BY s.modified DESC LIMIT ?",
+        [*([like] * 4), BLEND_POOL["meta"]],
+    ).fetchall()
+    low = q.lower()
+    out: dict[str, dict] = {}
+    for r in rows:
+        title = (r["title"] or "").lower()
+        # LIKE hands back no score, so the field that matched is the score: a
+        # title hit is what this mode exists for, the rest are fallbacks
+        if low in title:
+            score = 1.0 if title.startswith(low) else 0.8
+        elif low in (r["first_prompt"] or "").lower():
+            score = 0.6
+        else:
+            score = 0.3
+        out[r["session_id"]] = {"score": score}
+    return out
+
+
+def _content_hits(con, q: str) -> dict[str, dict]:
+    """full-text hits, keyed by the listable session that owns them.
+
+    the same MATERIALIZED cte the paged content search uses, minus the scope
+    filters and paging — blending applies both afterwards, over every mode at
+    once. bm25 ranks better-is-more-negative, so the raw score is negated here
+    and every mode hands `_norm` a higher-is-better number.
+    """
+    match = fts_query(q)
+    if not match:
+        return {}
+    owner = (
+        "  SELECT CASE WHEN m.kind = 'subagent' THEN m.parent_id ELSE raw.sid END"
+        "    AS session_id,"
+        "    CASE WHEN m.kind = 'subagent' THEN 1 ELSE 0 END AS via,"
+        "    raw.score, raw.snip"
+        "  FROM raw JOIN sessions m ON m.session_id = raw.sid"
+    )
+    sql = (
+        "WITH raw AS MATERIALIZED ("
+        "  SELECT session_id AS sid, bm25(msg_fts) AS score,"
+        "    snippet(msg_fts, 0, '\x02', '\x03', '…', 14) AS snip"
+        "  FROM msg_fts WHERE msg_fts MATCH ?),"
+        f" mapped AS ({owner})"
+        " SELECT session_id, MIN(score) AS score, COUNT(*) AS n_hits,"
+        "   SUM(via) AS n_via, snip"
+        " FROM mapped GROUP BY session_id ORDER BY score ASC LIMIT ?"
+    )
+    try:
+        rows = con.execute(sql, [match, BLEND_POOL["content"]]).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    return {
+        r["session_id"]: {
+            "score": -r["score"],
+            "snip": r["snip"],
+            "n_hits": r["n_hits"],
+            "n_via": r["n_via"],
+        }
+        for r in rows
+    }
+
+
+def _meaning_hits(con, q: str) -> dict[str, dict]:
+    """the top slice of the cosine neighbourhood, in the shape the blend wants."""
+    hits = semantic_hits(con, q)
+    top = sorted(hits.items(), key=lambda kv: -kv[1]["score"])[: BLEND_POOL["semantic"]]
+    return {
+        sid: {
+            "score": h["score"], "snip": h["snip"],
+            "n_hits": h["n_hits"], "n_via": h["via_subagent"],
+        }
+        for sid, h in top
+    }
+
+
+def _rows_for(con, clause: str, args: list, cols: str, ids: list) -> dict:
+    """the indexed rows for `ids` that also pass the scope filters.
+
+    chunked because `ids` is a union of three pools and sqlite caps how many
+    bound parameters one statement may carry.
+    """
+    out = {}
+    for i in range(0, len(ids), 400):
+        part = ids[i : i + 400]
+        marks = ",".join("?" * len(part))
+        for r in con.execute(
+            f"SELECT {cols} FROM sessions s"
+            f" WHERE {clause} AND s.session_id IN ({marks})",
+            [*args, *part],
+        ):
+            out[r["session_id"]] = r
+    return out
+
+
+def blended_search(
+    con, q: str, clause: str, args: list, cols: str,
+    sort="relevance", offset=0,
+) -> dict:
+    """all three search modes at once, ranked into one list.
+
+    each mode runs over the whole corpus, the scope filters are applied once to
+    the union, and `_norm` puts the survivors on one scale — see it for the
+    rule. every row carries the modes that matched it, so the chips can narrow
+    the list without asking again, and each mode's own count and wall time.
+    """
+    per: dict[str, dict[str, dict]] = {}
+    ms: dict[str, float] = {}
+    for name, fn in (
+        ("meta", _meta_hits), ("content", _content_hits), ("semantic", _meaning_hits),
+    ):
+        t0 = time.perf_counter()
+        per[name] = fn(con, q)
+        ms[name] = round((time.perf_counter() - t0) * 1000, 1)
+
+    ids = list({sid for hits in per.values() for sid in hits})
+    rows = _rows_for(con, clause, args, cols, ids)
+    # normalising after the filter, not before: a top hit the scope excluded
+    # would otherwise compress every score that is actually on screen
+    norm = {
+        m: _norm({sid: h["score"] for sid, h in hits.items() if sid in rows})
+        for m, hits in per.items()
+    }
+
+    merged = []
+    for sid, row in rows.items():
+        modes = [m for m in norm if sid in norm[m]]
+        best = min(modes, key=lambda m: (-norm[m][sid], BLEND_TIE[m]))
+        hit = per[best][sid]
+        d = _shape(dict(row))
+        d["score"] = round(norm[best][sid], 4)
+        d["hit_mode"] = best
+        d["hit_modes"] = sorted(modes, key=lambda m: BLEND_TIE[m])
+        d["snip"] = hit.get("snip", "")
+        d["n_hits"] = hit.get("n_hits", 0)
+        d["via_subagent"] = 1 if hit.get("n_via") else 0
+        merged.append(d)
+
+    def cost_key(d):
+        # an unpriced session sits at the bottom of either direction, the same
+        # way the sql sorts push its NULL cost down
+        c = d["cost"]
+        if c is None:
+            return (1, 0.0)
+        return (0, -c if sort == "costly" else c)
+
+    if sort in ("recent", "oldest"):
+        merged.sort(key=lambda d: d["modified"], reverse=sort == "recent")
+    elif sort in ("longest", "shortest"):
+        merged.sort(
+            key=lambda d: d["n_user"] + d["n_assistant"], reverse=sort == "longest"
+        )
+    elif sort in ("costly", "cheapest"):
+        merged.sort(key=cost_key)
+    else:
+        merged.sort(key=lambda d: -d["score"])
+    merged = merged[:BLEND_CAP]
+
+    ran = {"meta": True, "content": True, "semantic": SEMANTIC_OK and VEC_FILE.exists()}
+    return {
+        "total": len(merged),
+        "sessions": merged[offset:],
+        "mode": "blend",
+        "modes": {
+            m: {
+                "n": sum(1 for d in merged if m in d["hit_modes"]),
+                "ms": ms[m], "ran": ran[m],
+            }
+            for m in ("meta", "content", "semantic")
+        },
+        "ms": round(sum(ms.values()), 1),
     }
 
 
@@ -1821,6 +2047,20 @@ def live_sessions(con) -> dict:
     return {"sessions": out}
 
 
+def waiting_count() -> dict:
+    """how many sessions are stopped on you, and nothing else.
+
+    the header badge polls this every few seconds, so it reads the registry and
+    stops there — no transcript is opened. reading substance is the board's job,
+    and it only does it while you are looking at the board.
+    """
+    regs = registry_rows()
+    return {
+        "waiting": sum(1 for d in regs if str(d.get("status") or "") == "waiting"),
+        "running": len(regs),
+    }
+
+
 def full_session(con, session_id: str) -> dict:
     row = con.execute(
         "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
@@ -2016,6 +2256,8 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/live":
                 with self.lock:
                     self._json(live_sessions(self.con))
+            elif url.path == "/api/waiting":
+                self._json(waiting_count())
             elif url.path == "/api/status":
                 with self.lock:
                     self._json(status(self.con))
