@@ -99,17 +99,29 @@ function wrapMatches(re, cap = 2000) {
 // semantic queries are descriptions, not terms, so there is nothing literal to
 // highlight. The server hands back the message that matched (`snip`); find that
 // message in the transcript and mark the whole thing.
-function markSemantic(snip) {
-  if (!snip) return [];
-  const norm = (t) => t.replace(/\s+/g, ' ').trim();
-  const key = norm(snip).replace(/…+$/, '');
-  if (key.length < 12) return [];
+// every above-floor chunk the row claimed, so the row's hit count and the find
+// bar's "n of N" are the same number
+function markSemantic(snips) {
+  const list = (Array.isArray(snips) ? snips : [snips]).filter(Boolean);
+  if (!list.length) return [];
+  // the index stores the raw message, the reader renders it: `code` and **bold**
+  // lose their markers on the way to textContent, so neither side keeps them
+  const norm = (t) => t.replace(/[`*_]/g, '').replace(/\s+/g, ' ').trim();
   const evs = $$('.ev', convoEl);
-  const hit = evs.find((e) => norm(e.querySelector('.body').textContent).startsWith(key))
-    || evs.find((e) => norm(e.querySelector('.body').textContent).includes(key));
-  if (!hit) return [];
-  hit.classList.add('semhit');
-  return [hit];
+  const bodies = evs.map((e) => norm(e.querySelector('.body').textContent));
+  const out = [], used = new Set();
+  for (const snip of list) {
+    const key = norm(snip).replace(/…+$/, '');
+    if (key.length < 12) continue;
+    let i = bodies.findIndex((b, k) => !used.has(k) && b.startsWith(key));
+    if (i < 0) i = bodies.findIndex((b, k) => !used.has(k) && b.includes(key));
+    if (i < 0) continue;
+    used.add(i);
+    evs[i].classList.add('semhit');
+    out.push(evs[i]);
+  }
+  // in transcript order, so `n` walks the conversation forwards
+  return out.sort((a, b) => evs.indexOf(a) - evs.indexOf(b));
 }
 
 function refreshNav(keepCurrent) {
@@ -534,7 +546,7 @@ export async function openSession(id, want = 'transcript') {
     }
   } else if (state.q && hitMode === 'semantic') {
     findSource = 'semantic';
-    marks = markSemantic(row.snip);
+    marks = markSemantic(row.snips || row.snip);
   }
   if (findSource === 'search') fqEl.value = state.q;
   // arriving from a search always shows the bar, even on zero matches — landing

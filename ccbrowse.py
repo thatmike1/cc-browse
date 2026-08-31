@@ -956,16 +956,36 @@ def subagent_parents(con) -> dict[str, str]:
     }
 
 
-# below this the nearest neighbour is just noise, not a weak answer
+# the meaning chip has to narrow, and an absolute floor cannot make it. cosine
+# similarity against this corpus runs high for anything phrased the way a
+# developer asks a question, so 0.15 admitted 1,100–2,300 sessions out of 2,080
+# on every one of ten queries measured — a chip claiming most of the corpus
+# narrows nothing. the floor is taken relative to the query's own best chunk
+# instead. at 0.70 of that best score the ten queries admit a median of 54
+# sessions (2.6% of the corpus) and 133 at worst (6.4%), while an exact phrase
+# like "bm25 loses its context" still cuts to 2. 0.65 let one broad query claim
+# 258; 0.75 dropped near neighbours worth reading. the best score is taken
+# *after* the scope mask, so scoping to a project that talks about the subject
+# less than another one does not empty the mode out.
+SEM_REL = 0.70
+# and a query whose own best match is already noise gets no free pass from being
+# relative to itself
 SEM_FLOOR = 0.15
+# how many of a session's above-floor chunks the row ships and the reader marks.
+# the row's hit count is this many, not the raw chunk tally: a count you cannot
+# then step through in the transcript is a number about the index, not a result
+SEM_SNIPS = 5
 
 
-def _vec_owners(con, rows: list, fp: str) -> list:
-    """per vector index, (the session that owns it, whether via a subagent).
+def _vec_owners(con, rows: list, fp: str):
+    """(codes, session ids, via flags) per vector index, cached with the matrix.
 
-    cached with the matrix, for the same reason: the alternative is a SELECT per
-    candidate row, which is what made a *scoped* semantic search walk the
-    database one message at a time to find rows the scope had already excluded.
+    codes index into the session-id list rather than repeating ids per chunk, so
+    the scope mask and the score floor are array work over 100k chunks instead of
+    a python loop, and only the survivors are ever touched one at a time. the
+    cache also replaces a SELECT per candidate row, which is what made a *scoped*
+    semantic search walk the database to find rows the scope had already
+    excluded.
     """
     if _vec_state.get("owners") is not None and _vec_state.get("owner_fp") == fp:
         return _vec_state["owners"]
@@ -974,10 +994,20 @@ def _vec_owners(con, rows: list, fp: str) -> list:
         r["rowid"]: r["session_id"]
         for r in con.execute("SELECT rowid, session_id FROM msg_fts")
     }
-    owners = []
-    for rid in rows:
+    sids: list[str] = []
+    code_of: dict[str, int] = {}
+    codes = np.empty(len(rows), dtype=np.int32)
+    via = np.zeros(len(rows), dtype=np.uint8)
+    for n, rid in enumerate(rows):
         raw = by_rowid.get(rid, "")
-        owners.append((parents.get(raw, raw), 1 if raw in parents else 0))
+        sid = parents.get(raw, raw)
+        code = code_of.get(sid)
+        if code is None:
+            code = code_of[sid] = len(sids)
+            sids.append(sid)
+        codes[n] = code
+        via[n] = 1 if raw in parents else 0
+    owners = (codes, sids, via)
     _vec_state.update(owners=owners, owner_fp=fp)
     return owners
 
@@ -989,37 +1019,53 @@ def semantic_hits(con, q: str, pool: int = 600, allow=None) -> tuple[dict, set]:
     flagged `via_subagent`, since the subagent is not a browsable row.
 
     `allow`, when given, is the set of sessions the caller's scope admits, and it
-    is applied *while* walking the ranked neighbourhood rather than after: a pool
-    filled with sessions the scope excludes is a pool that found nothing. the
-    second return value is the full set of sessions above the noise floor, which
-    is the mode's honest hit count even when only `pool` of them are scored.
+    is applied before the floor is chosen rather than after: a pool filled with
+    sessions the scope excludes is a pool that found nothing. the second return
+    value is every session with a chunk above the floor, which is the mode's
+    honest hit count even when only `pool` of them are scored.
+
+    `n_hits` counts that session's own above-floor chunks that the row carries a
+    snippet for, so the number on the row is the number the reader can step
+    through after opening it — not the corpus-wide tally the old floor produced.
     """
     matrix, rows = load_vectors(con)
     if matrix is None:
         return {}, set()
-    owners = _vec_owners(con, rows, _fingerprint(con))
+    codes, sids, via = _vec_owners(con, rows, _fingerprint(con))
     qv = np.asarray(get_model().encode([q])[0], dtype=np.float32)
     qv /= max(float(np.linalg.norm(qv)), 1e-9)
     scores = matrix @ qv
-    order = np.argsort(-scores)
+    if allow is not None:
+        keep = np.fromiter((s in allow for s in sids), dtype=bool, count=len(sids))
+        scores = np.where(keep[codes], scores, np.float32(-1.0))
+    if not scores.size:
+        return {}, set()
+    floor = max(SEM_FLOOR, SEM_REL * float(scores.max()))
+    idx = np.nonzero(scores >= floor)[0]
+    if not idx.size:
+        return {}, set()
+    idx = idx[np.argsort(-scores[idx])]
 
     out: dict[str, dict] = {}
     every: set = set()
-    best: list = []  # (rowid, session_id) for the rows a snippet is wanted from
-    for i in order:
-        score = float(scores[i])
-        if score < SEM_FLOOR:
-            break
-        sid, via = owners[int(i)]
-        if not sid or (allow is not None and sid not in allow):
+    best: list = []  # (rowid, session_id), in score order, for the snippet pass
+    for j in idx:
+        i = int(j)
+        sid = sids[codes[i]]
+        if not sid:
             continue
         every.add(sid)
         if sid in out:
-            out[sid]["n_hits"] += 1
-            out[sid]["via_subagent"] |= via
+            if len(out[sid]["snips"]) + out[sid]["pending"] < SEM_SNIPS:
+                out[sid]["pending"] += 1
+                best.append((rows[i], sid))
+            out[sid]["via_subagent"] |= int(via[i])
         elif len(out) < pool:
-            out[sid] = {"score": score, "snip": "", "n_hits": 1, "via_subagent": via}
-            best.append((rows[int(i)], sid))
+            out[sid] = {
+                "score": float(scores[i]), "snips": [], "pending": 1,
+                "via_subagent": int(via[i]),
+            }
+            best.append((rows[i], sid))
 
     for i in range(0, len(best), 400):
         part = best[i : i + 400]
@@ -1033,7 +1079,11 @@ def semantic_hits(con, q: str, pool: int = 600, allow=None) -> tuple[dict, set]:
         }
         for rid, sid in part:
             text = " ".join((texts.get(rid) or "").split())
-            out[sid]["snip"] = text[:260] + ("…" if len(text) > 260 else "")
+            out[sid]["snips"].append(text[:260] + ("…" if len(text) > 260 else ""))
+    for h in out.values():
+        h.pop("pending", None)
+        h["snip"] = h["snips"][0] if h["snips"] else ""
+        h["n_hits"] = len(h["snips"])
     return out, every
 
 
@@ -1445,7 +1495,7 @@ def _meaning_hits(con, q: str, allow: set) -> tuple[dict, set]:
     hits, every = semantic_hits(con, q, pool=BLEND_POOL["semantic"], allow=allow)
     return {
         sid: {
-            "score": h["score"], "snip": h["snip"],
+            "score": h["score"], "snip": h["snip"], "snips": h["snips"],
             "n_hits": h["n_hits"], "n_via": h["via_subagent"],
         }
         for sid, h in hits.items()
@@ -1516,6 +1566,9 @@ def blended_search(
         d["hit_mode"] = best
         d["hit_modes"] = sorted(modes, key=lambda m: BLEND_TIE[m])
         d["snip"] = hit.get("snip", "")
+        # the reader marks every one of these, so the row's count is their number
+        if hit.get("snips"):
+            d["snips"] = hit["snips"]
         d["n_hits"] = hit.get("n_hits", 0)
         d["via_subagent"] = 1 if hit.get("n_via") else 0
         merged.append(d)
