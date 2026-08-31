@@ -36,6 +36,19 @@ function hitHtml(s) {
   </div>`;
 }
 
+// the badge may only promise marks the reader will actually show. a match that
+// lives in a subagent transcript is not in this conversation's reader, so it is
+// named as such rather than counted into a number that opens to "no matches"
+function hitsHtml(s) {
+  const n = s.n_hits || 0, sub = s.n_sub || 0;
+  if (!n && !sub) return '';
+  if (!n) {
+    return `<span class="hits sub" title="every match is inside a subagent transcript, which this conversation's reader does not show">${sub} in subagent</span>`;
+  }
+  return `<span class="hits">${n} hit${n > 1 ? 's' : ''}${sub
+    ? `<i title="matched inside a subagent transcript, which this reader does not show"> · ${sub} in subagent</i>` : ''}</span>`;
+}
+
 function rowHtml(s, i) {
   const hit = s.snip
     ? `<div class="snip">${unmark(s.snip)}</div>`
@@ -58,7 +71,7 @@ function rowHtml(s, i) {
       <span class="sep">·</span><span>${ago(s.modified)}</span>
       ${s.n_agents ? `<span class="sep">·</span><span class="lanes" title="${s.n_agents} agent lane${s.n_agents > 1 ? 's' : ''} ran in this conversation">${s.n_agents} lane${s.n_agents > 1 ? 's' : ''}</span>` : ''}
       ${s.via_subagent ? '<span class="via" title="matched inside a subagent transcript, not the conversation itself">via subagent</span>' : ''}
-      ${s.n_hits ? `<span class="hits">${s.n_hits} hit${s.n_hits > 1 ? 's' : ''}</span>` : ''}
+      ${hitsHtml(s)}
       ${s.cost != null ? `<span class="cost" title="notional cost at list prices">${fmtCost(s.cost)}</span>` : ''}
     </div>${hit}</div>`;
 }

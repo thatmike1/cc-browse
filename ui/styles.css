@@ -211,6 +211,10 @@ main { flex: 1; display: flex; min-height: 0; }
 /* cost is ambient, not a result: it sits where .hits sits but stays --faint */
 .row .cost { margin-left: auto; font-variant-numeric: tabular-nums; }
 .row .hits + .cost { margin-left: 0; }
+/* a match the reader cannot show is stated, not counted: one step quieter than
+   the hits it sits beside, and the whole badge goes quiet when it is all there is */
+.row .hits i { font-style: normal; font-weight: 400; color: var(--faint); }
+.row .hits.sub { color: var(--dim); font-weight: 400; }
 mark { background: rgba(224,164,95,.2); color: var(--mark); border-radius: 3px; padding: 0 2px; }
 mark.cur {
   background: var(--accent); color: var(--bg); font-weight: 600;

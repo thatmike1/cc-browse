@@ -1027,9 +1027,12 @@ def semantic_hits(con, q: str, pool: int = 600, allow=None) -> tuple[dict, set]:
     value is every session with a chunk above the floor, which is the mode's
     honest hit count even when only `pool` of them are scored.
 
-    `n_hits` counts that session's own above-floor chunks that the row carries a
-    snippet for, so the number on the row is the number the reader can step
-    through after opening it — not the corpus-wide tally the old floor produced.
+    `n_hits` counts only the chunks in the session's *own* transcript that the
+    row carries a snippet for, so the number on the row is the number the reader
+    can step through after opening it. chunks that matched inside a subagent
+    transcript are counted separately as `n_sub`: the parent's reader never
+    renders them, so a badge that folded them in would promise marks the find
+    bar cannot deliver.
     """
     matrix, rows = load_vectors(con)
     if matrix is None:
@@ -1051,42 +1054,45 @@ def semantic_hits(con, q: str, pool: int = 600, allow=None) -> tuple[dict, set]:
 
     out: dict[str, dict] = {}
     every: set = set()
-    best: list = []  # (rowid, session_id), in score order, for the snippet pass
+    # a chunk inside a subagent transcript is not in the parent's reader, so it
+    # can never be marked there. keep the two apart: `mark` is what the reader
+    # will actually surface and what the row's count may claim, `n_sub` is what
+    # the row has to name as living somewhere else.
+    mark: dict[str, list] = {}
+    top: dict[str, int] = {}  # best chunk of any kind, for the row's own snippet
     for j in idx:
         i = int(j)
         sid = sids[codes[i]]
         if not sid:
             continue
         every.add(sid)
-        if sid in out:
-            if len(out[sid]["snips"]) + out[sid]["pending"] < SEM_SNIPS:
-                out[sid]["pending"] += 1
-                best.append((rows[i], sid))
-            out[sid]["via_subagent"] |= int(via[i])
-        elif len(out) < pool:
-            out[sid] = {
-                "score": float(scores[i]), "snips": [], "pending": 1,
-                "via_subagent": int(via[i]),
-            }
-            best.append((rows[i], sid))
+        if sid not in out:
+            if len(out) >= pool:
+                continue
+            out[sid] = {"score": float(scores[i]), "n_sub": 0, "via_subagent": 0}
+            mark[sid] = []
+            top[sid] = rows[i]
+        if via[i]:
+            out[sid]["n_sub"] += 1
+            out[sid]["via_subagent"] = 1
+        elif len(mark[sid]) < SEM_SNIPS:
+            mark[sid].append(rows[i])
 
-    for i in range(0, len(best), 400):
-        part = best[i : i + 400]
+    wanted = sorted({rid for rids in mark.values() for rid in rids} | set(top.values()))
+    texts: dict[int, str] = {}
+    for i in range(0, len(wanted), 400):
+        part = wanted[i : i + 400]
         marks = ",".join("?" * len(part))
-        texts = {
-            r["rowid"]: r["text"]
-            for r in con.execute(
-                f"SELECT rowid, text FROM msg_fts WHERE rowid IN ({marks})",
-                [rid for rid, _ in part],
-            )
-        }
-        for rid, sid in part:
-            text = " ".join((texts.get(rid) or "").split())
-            out[sid]["snips"].append(text[:260] + ("…" if len(text) > 260 else ""))
-    for h in out.values():
-        h.pop("pending", None)
-        h["snip"] = h["snips"][0] if h["snips"] else ""
+        for r in con.execute(
+            f"SELECT rowid, text FROM msg_fts WHERE rowid IN ({marks})", part
+        ):
+            text = " ".join((r["text"] or "").split())
+            texts[r["rowid"]] = text[:260] + ("…" if len(text) > 260 else "")
+
+    for sid, h in out.items():
+        h["snips"] = [texts.get(rid, "") for rid in mark[sid]]
         h["n_hits"] = len(h["snips"])
+        h["snip"] = h["snips"][0] if h["snips"] else texts.get(top[sid], "")
     return out, every
 
 
@@ -1499,7 +1505,7 @@ def _meaning_hits(con, q: str, allow: set) -> tuple[dict, set]:
     return {
         sid: {
             "score": h["score"], "snip": h["snip"], "snips": h["snips"],
-            "n_hits": h["n_hits"], "n_via": h["via_subagent"],
+            "n_hits": h["n_hits"], "n_sub": h["n_sub"], "n_via": h["via_subagent"],
         }
         for sid, h in hits.items()
     }, every
@@ -1573,6 +1579,9 @@ def blended_search(
         if hit.get("snips"):
             d["snips"] = hit["snips"]
         d["n_hits"] = hit.get("n_hits", 0)
+        # matches the parent's reader cannot show are named, never folded in
+        if hit.get("n_sub"):
+            d["n_sub"] = hit["n_sub"]
         d["via_subagent"] = 1 if hit.get("n_via") else 0
         merged.append(d)
 
