@@ -1,12 +1,16 @@
 # cc-browse
 
 A local reader for Claude Code conversation logs: index `~/.claude/projects/*.jsonl`
-into a SQLite cache, serve a single-page UI over it. Two source files, and they are
-edited independently — nothing is generated from anything else.
+into a SQLite cache, serve a single-page UI over it. Every source file is edited by
+hand — nothing is generated from anything else.
 
 - `ccbrowse.py` — scanner, cache, HTTP server, JSON API, and the `search`/`list`/`show`
   CLI. Stdlib apart from `model2vec` + `numpy`, declared as PEP 723 inline metadata.
-- `ui.html` — the whole front end. Hand-written HTML, CSS and JS in one file.
+- `ui.html` — the shell: head, favicon and the markup. Links `ui/styles.css` and
+  loads `ui/main.js` as a module.
+- `ui/` — the front end proper: one stylesheet plus seven hand-written ES modules
+  (`state`, `helpers`, `list`, `detail`, `timeline`, `live-board`, `main`). The
+  browser loads them as they are; `ccbrowse.py` serves the directory at `/ui/`.
 
 There is no build step, no test suite, no package manifest.
 
@@ -178,10 +182,15 @@ title.
 
 ## UI conventions
 
-- **No framework, no dependencies, no build step.** The value proposition is two files
-  you can run; anything off npm costs a bundler and a `node_modules`.
+- **No framework, no dependencies, no build step.** The value proposition is a checkout
+  you can run; anything off npm costs a bundler and a `node_modules`. The front end is
+  split into ES modules the browser resolves itself, never a bundle.
+- `ui/state.js` holds the only bindings that cross module boundaries (`state`, `show`,
+  and the `ui` object carrying `sessions`/`cursor`/`activeId`/`nav`/`view`). Everything
+  else stays a module-local `let` in the file that owns it, and DOM handles are
+  re-declared per module rather than exported.
 - The type scale is fixed at 11 / 12 / 14 / 16 / 20 px (14 arrives via the `body` font
-  shorthand). `impeccable detect ui.html` reports `flat-type-hierarchy` — it wants a
+  shorthand). `impeccable detect ui/styles.css` reports `flat-type-hierarchy` — it wants a
   ≥ 2.0 ratio between the extremes and this scale is 1.8 — plus five
   `design-system-color` findings for the accent alpha variants. Both are **known and
   accepted**; keep the scale as it is rather than inflating headings to clear the check.

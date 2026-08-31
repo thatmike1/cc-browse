@@ -1,9 +1,9 @@
 # Agent Instructions
 
 `cc-browse` indexes Claude Code conversation logs (`~/.claude/projects/*.jsonl`) into a
-SQLite cache and serves a single-page UI over it. Two files, edited independently:
-`ccbrowse.py` (scanner, cache, HTTP API, CLI) and `ui.html` (the entire front end —
-hand-written, no framework, no build step).
+SQLite cache and serves a single-page UI over it. Every file is edited by hand:
+`ccbrowse.py` (scanner, cache, HTTP API, CLI), `ui.html` (the shell) and `ui/` (one
+stylesheet and seven ES modules — no framework, no build step).
 
 ## Running it
 
@@ -64,12 +64,15 @@ identical totals) and cache writes are split by TTL. Cost is computed at read ti
 from `PRICES`, so changing a price needs no schema bump. A lane's end comes from the
 agent's own transcript, never the parent's `tool_result` — details in `CLAUDE.md`.
 
-## Editing `ui.html`
+## Editing the front end
 
 No framework, no npm, no build step — that constraint is the product, not an accident.
-The type scale is fixed at 11 / 12 / 14 / 16 / 20 px. `impeccable detect ui.html` reports
-`flat-type-hierarchy` and five `design-system-color` findings against it; both are known
-and accepted, so leave the scale alone rather than inflating headings to clear the check.
+`ui.html` is only the shell; the code lives in `ui/`, as `styles.css` plus seven ES
+modules the browser loads directly. Shared bindings belong in `ui/state.js` and nowhere
+else. The type scale is fixed at 11 / 12 / 14 / 16 / 20 px. `impeccable detect
+ui/styles.css` reports `flat-type-hierarchy` and five `design-system-color` findings
+against it; both are known and accepted, so leave the scale alone rather than inflating
+headings to clear the check.
 
 ## Non-Interactive Shell Commands
 

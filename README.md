@@ -1,8 +1,9 @@
 # cc-browse
 
-Read your Claude Code conversations in a browser. Two files: one Python script
-that indexes `~/.claude/projects/` into a SQLite cache and serves the UI, and one
-hand-written HTML page. No build step, no `node_modules`, no service.
+Read your Claude Code conversations in a browser. One Python script that indexes
+`~/.claude/projects/` into a SQLite cache and serves the UI, plus a hand-written
+front end: the `ui.html` shell and `ui/` — one stylesheet and seven ES modules the
+browser loads directly. No build step, no `node_modules`, no service.
 
 It exists because the logs are already on your disk and there is no good way to
 look at them. `claude --resume` shows a list of recent titles; the raw JSONL is
@@ -247,9 +248,10 @@ transformer cost.
 
 ## Design decisions worth defending
 
-**No component library, no framework, no build step.** The UI is one hand-written
-HTML file. Anything off npm would need a bundler and a `node_modules` for a tool
-whose entire appeal is that it is two files you can run.
+**No component library, no framework, no build step.** The UI is hand-written HTML,
+CSS and ES modules the browser loads as they are. Anything off npm would need a
+bundler and a `node_modules` for a tool whose entire appeal is that you can run it
+from a checkout.
 
 **The FTS query uses a `MATERIALIZED` CTE.** Without it SQLite inlines the CTE,
 `bm25()` loses its FTS context, and the query dies with *"unable to use function

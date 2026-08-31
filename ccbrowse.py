@@ -40,6 +40,7 @@ PROJECTS = Path.home() / ".claude" / "projects"
 CACHE_DB = Path.home() / ".cache" / "cc-browse" / "index.db"
 VEC_FILE = CACHE_DB.parent / "vectors.npy"
 UI_FILE = Path(__file__).parent / "ui.html"
+UI_DIR = Path(__file__).parent / "ui"
 
 SCHEMA_VERSION = 9
 
@@ -1967,6 +1968,16 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if url.path == "/":
                 self._send(200, UI_FILE.read_bytes(), "text/html; charset=utf-8")
+            elif url.path.startswith("/ui/"):
+                f = (UI_DIR / url.path[len("/ui/") :]).resolve()
+                if f.is_file() and f.is_relative_to(UI_DIR.resolve()):
+                    ctype = {
+                        ".css": "text/css; charset=utf-8",
+                        ".js": "text/javascript; charset=utf-8",
+                    }.get(f.suffix, "application/octet-stream")
+                    self._send(200, f.read_bytes(), ctype)
+                else:
+                    self._json({"error": "not found"}, 404)
             elif url.path == "/api/sessions":
                 with self.lock:
                     data = list_sessions(
